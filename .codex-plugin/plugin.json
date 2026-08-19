@@ -1,0 +1,18 @@
+{
+  "name": "turnecho",
+  "version": "0.1.0",
+  "description": "A Codex plugin that lets your AI Agent to dare talk back to you on every turn.",
+  "author": {
+    "name": "Rifky Manuel Satyana",
+    "email": "rmscoaldev@gmail.com"
+  },
+  "interface": {
+    "displayName": "TurnEcho",
+    "shortDescription": "Hear the response after each Codex turn.",
+    "longDescription": "TurnEcho queues completed Codex responses and reads them out loud without changing the original response.",
+    "developerName": "Rifky Manuel Satyana",
+    "category": "Productivity",
+    "capabilities": ["Hooks", "Audio"],
+    "defaultPrompt": []
+  }
+}

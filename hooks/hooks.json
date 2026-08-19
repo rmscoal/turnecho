@@ -1,0 +1,17 @@
+{
+  "description": "Hooks",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --project \"$PLUGIN_ROOT\" turnecho-hook",
+            "statusMessage": "Talking back to you",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

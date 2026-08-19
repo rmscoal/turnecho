@@ -1,0 +1,2 @@
+class WorkerAlreadyRunning(Exception):
+    pass
