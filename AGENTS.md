@@ -4,42 +4,54 @@ These instructions apply to all work in this repository.
 
 ## Project purpose
 
-TurnEcho is a local Codex plugin that speaks the final agent response. The
-current implementation registers a Codex `Stop` hook, stores messages in a
-SQLite queue, and processes them sequentially with one detached KittenTTS
-worker.
+TurnEcho is a local Codex plugin that speaks a short summary of the final
+agent response. The current implementation registers Codex `UserPromptSubmit`
+and `Stop` hooks, stores validated summaries in a SQLite queue, and processes
+them sequentially with one detached KittenTTS worker.
 
 Current behavior matters when changing code or documentation:
 
 - Only Codex hook input is supported.
-- The full `last_assistant_message` is spoken. There is no summary step yet.
+- Only a validated TurnEcho summary marker at the end of
+  `last_assistant_message` is spoken. The full response is not spoken.
+- If the summary is missing or invalid, no job is queued and no voice is
+  produced. Hook validation and queue errors still return valid empty JSON
+  (`{}`), while worker failures are recorded without producing audio.
 - Jobs are deduplicated by `(host, session_id, turn_id)`.
 - Only one worker may own the cross-process `fcntl` lock.
 - Abandoned `processing` jobs are requeued when a new worker takes the lock.
 - The worker loads the TTS model only when pending work exists.
 - The worker processes audio sequentially and exits after an idle timeout.
 
-Do not describe planned summary, configuration, voice selection, or additional
-host support as implemented behavior.
+Do not describe planned configuration, voice selection, or additional host
+support as implemented behavior.
 
 ## Repository layout
 
 - `.codex-plugin/plugin.json`: Codex plugin metadata
 - `hooks/hooks.json`: plugin hook registration and command
-- `src/turnecho/hook.py`: hook parsing, validation, queue insertion, and worker
-  startup
+- `src/turnecho/stop_hook.py`: Stop-hook parsing, validation, queue insertion,
+  and worker startup
+- `src/turnecho/prompt_hook.py`: dependency-free UserPromptSubmit hook
+- `src/turnecho/install_plugin.py`: preflighted GitHub plugin installer
+- `src/turnecho/runtime_preflight.py`: TTS model and audio output checks
 - `src/turnecho/sqlite.py`: SQLite schema and queue operations
 - `src/turnecho/worker.py`: process locking, recovery, TTS, and audio playback
-- `src/turnecho/schema.py`: Pydantic input and job models
+- `src/turnecho/schema.py`: standard-library queued job model
 - `src/turnecho/constant.py`: shared paths, timing, status, and host constants
+- `scripts/install_local_plugin.py`: local marketplace installer
+- `scripts/update_plugin_cachebuster.py`: local update cachebuster helper
 - `tests/`: standard-library `unittest` tests
 
 ## Engineering rules
 
 - Keep the hook fast. Do not load TTS, wait for audio, or perform other slow
   work in the hook process.
-- Preserve the hook's stdout contract. It must print valid JSON (`{}`) so it
-  does not modify the agent response.
+- Keep both hook entry points dependency-free so a cold plugin runtime cannot
+  delay prompt or Stop handling.
+- Preserve the hook's stdout contract. It must print valid JSON; `Stop` returns
+  `{}` so it does not modify the agent response, while `UserPromptSubmit` may
+  return its required `additionalContext` object.
 - Send diagnostics to stderr or the worker log, never to hook stdout.
 - Keep database claims atomic. Changes to queue ownership must remain safe when
   several hooks or worker processes start at nearly the same time.
@@ -77,7 +89,7 @@ normal automated tests so tests do not download models or play sound.
 Run targeted tests while developing, then run:
 
 ```sh
-uv run python -m unittest discover -s tests
+uv run --no-dev python -m unittest discover -s tests
 make check
 ```
 

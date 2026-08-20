@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 
 from .constant import (
+    TURNECHO_AUDIO_SAMPLE_RATE,
+    TURNECHO_MODEL_NAME,
     TURNECHO_WORKER_IDLE_TIMEOUT_WITHOUT_JOB_SECONDS,
     TURNECHO_WORKER_LOCK_FILE_PATH_MACOS_LINUX,
     TURNECHO_WORKER_LOCK_RETRY_SECONDS,
@@ -67,7 +69,7 @@ def run_in_loop(model, audio_output):
         # Generate audio and update job record accordingly
         try:
             audio = model.generate(job.message, voice="Hugo")
-            audio_output.play(audio, samplerate=24000)
+            audio_output.play(audio, samplerate=TURNECHO_AUDIO_SAMPLE_RATE)
             audio_output.wait()
 
             job.processing_status = TurnEchoJobProcessingStatus.SUCCESS.value
@@ -94,7 +96,7 @@ def process():
         import sounddevice
         from kittentts import KittenTTS
 
-        model = KittenTTS("KittenML/kitten-tts-nano-0.8")
+        model = KittenTTS(TURNECHO_MODEL_NAME)
         run_in_loop(model, sounddevice)
     finally:
         worker_lock.close()

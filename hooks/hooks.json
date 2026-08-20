@@ -1,12 +1,23 @@
 {
   "description": "Hooks",
   "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PYTHONPATH=\"$PLUGIN_ROOT/src\" python3 -m turnecho.prompt_hook",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --project \"$PLUGIN_ROOT\" turnecho-hook",
+            "command": "PYTHONPATH=\"$PLUGIN_ROOT/src\" python3 -m turnecho.stop_hook",
             "statusMessage": "Talking back to you",
             "timeout": 10
           }

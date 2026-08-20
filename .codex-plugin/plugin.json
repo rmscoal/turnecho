@@ -4,15 +4,21 @@
   "description": "A Codex plugin that lets your AI Agent to dare talk back to you on every turn.",
   "author": {
     "name": "Rifky Manuel Satyana",
-    "email": "rmscoaldev@gmail.com"
+    "email": "rmscoaldev@gmail.com",
+    "url": "https://github.com/rmscoal"
   },
+  "repository": "https://github.com/rmscoal/turnecho",
+  "license": "MIT",
   "interface": {
     "displayName": "TurnEcho",
-    "shortDescription": "Hear the response after each Codex turn.",
-    "longDescription": "TurnEcho queues completed Codex responses and reads them out loud without changing the original response.",
+    "shortDescription": "Talk back on agent response.",
+    "longDescription": "TurnEcho queues validated Codex summaries and reads them out loud without changing the original response.",
     "developerName": "Rifky Manuel Satyana",
     "category": "Productivity",
-    "capabilities": ["Hooks", "Audio"],
+    "capabilities": [
+      "Hooks",
+      "Audio"
+    ],
     "defaultPrompt": []
   }
 }

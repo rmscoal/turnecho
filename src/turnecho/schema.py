@@ -1,20 +1,10 @@
-from pydantic import BaseModel, Field
+from dataclasses import dataclass
 
 
-class CodexHookInputMessage(BaseModel):
-    session_id: str = Field(default="")
-    cwd: str = Field(default="")
-    hook_event_name: str = Field(default="")
-    model: str = Field(default="")
+@dataclass
+class TurnEchoJob:
+    """One queued summary and its processing state."""
 
-
-class CodexHookStopInputMessage(CodexHookInputMessage):
-    turn_id: str = Field(default="")
-    stop_hook_active: bool = Field(default=False)
-    last_assistant_message: str | None = Field(default="")
-
-
-class TurnEchoJob(BaseModel):
     id: str
     host: str
     session_id: str

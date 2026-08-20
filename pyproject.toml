@@ -1,17 +1,17 @@
 [project]
 name = "turnecho"
 version = "0.1.0"
-description = "Codex plugin that reads completed agent responses out loud"
+description = "Codex plugin that reads agent summaries out loud"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "kittentts",
-    "pydantic>=2.13.4",
     "sounddevice>=0.5.5",
 ]
 
 [project.scripts]
-turnecho-hook = "turnecho.hook:main"
+turnecho-hook = "turnecho.stop_hook:main"
+turnecho-install = "turnecho.install_plugin:main"
 
 [build-system]
 requires = ["uv_build>=0.11.7,<0.12"]

@@ -1912,7 +1912,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "kittentts" },
-    { name = "pydantic" },
     { name = "sounddevice" },
 ]
 
@@ -1924,7 +1923,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "kittentts", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
-    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "sounddevice", specifier = ">=0.5.5" },
 ]
 

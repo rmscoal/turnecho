@@ -1,0 +1,21 @@
+{
+  "name": "turnecho",
+  "interface": {
+    "displayName": "TurnEcho"
+  },
+  "plugins": [
+    {
+      "name": "turnecho",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/rmscoal/turnecho.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}
