@@ -52,7 +52,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "{}\n")
         self.assertEqual(result.stderr, "")
 
-    def test_registered_prompt_hook_does_not_use_uv(self) -> None:
+    def test_registered_prompt_hook_uses_uv_without_syncing_dependencies(self) -> None:
         hooks = json.loads(
             (PROJECT_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
         )
@@ -60,9 +60,10 @@ class UserPromptSubmitHookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            'PYTHONPATH="$PLUGIN_ROOT/src" python3 -m turnecho.prompt_hook',
+            'PYTHONPATH="$PLUGIN_ROOT/src" uv run --project "$PLUGIN_ROOT" '
+            "--no-dev --no-sync python -m turnecho.prompt_hook",
         )
-        self.assertNotIn("uv", command)
+        self.assertIn("--no-sync", command)
 
 
 if __name__ == "__main__":

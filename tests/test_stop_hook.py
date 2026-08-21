@@ -145,7 +145,7 @@ class HookTests(unittest.TestCase):
         self.assertEqual(stdout, "{}\n")
         self.assertEqual(stderr, "")
 
-    def test_registered_stop_hook_does_not_resolve_project_dependencies(self) -> None:
+    def test_registered_stop_hook_uses_uv_without_syncing_dependencies(self) -> None:
         hooks = json.loads(
             (Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text(
                 encoding="utf-8"
@@ -155,9 +155,10 @@ class HookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            'PYTHONPATH="$PLUGIN_ROOT/src" python3 -m turnecho.stop_hook',
+            'PYTHONPATH="$PLUGIN_ROOT/src" uv run --project "$PLUGIN_ROOT" '
+            "--no-dev --no-sync python -m turnecho.stop_hook",
         )
-        self.assertNotIn("uv", command)
+        self.assertIn("--no-sync", command)
 
     def test_stop_hook_starts_without_site_packages(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rmscoal/turnecho/blob/main/LICENSE">MIT</a>
+  <a href="https://github.com/rmscoal/turnecho/blob/v0.1.0/LICENSE">MIT</a>
   · Python 3.13+
   · macOS and Linux
   · Codex plugin
@@ -125,7 +125,7 @@ The hook path is intentionally small:
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@main turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.1.0 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
@@ -144,21 +144,53 @@ command fails and TurnEcho is not added to Codex. A local checkout is not
 required. Direct `codex plugin add` has no dependency-preflight lifecycle, so
 it is an internal installer step rather than the recommended user command.
 
-Both hooks use only Python's standard library and the TurnEcho source. They do
-not wait for dependency resolution. Only the detached audio worker uses the
-prepared `uv` runtime. Start a new Codex thread after installation and review
-the plugin hook if Codex asks for trust.
+Both hooks use only Python's standard library and the TurnEcho source. They
+run through `uv` with `--no-sync`, so they use the project's compatible Python
+runtime without resolving or downloading dependencies during a turn. The
+detached audio worker uses the same prepared `uv` runtime. Start a new Codex
+thread after installation and review the plugin hook if Codex asks for trust.
 
-Codex installs a cached copy of the plugin. To pick up a new GitHub commit,
-run the same preflight flow in update mode:
+Codex installs a cached copy of the plugin. To refresh the installed
+`v0.1.0` release, run the same preflight flow in update mode:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@main turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.1.0 turnecho-install --update
 ```
 
 The repository marketplace is defined in
 `.agents/plugins/marketplace.json`. It points Codex at the root plugin in this
-GitHub repository.
+GitHub repository and pins this release to `v0.1.0`. Future releases will
+replace the tag in the installation command and marketplace entry.
+
+## Uninstall
+
+For a GitHub installation, remove the installed plugin:
+
+```sh
+codex plugin remove turnecho@turnecho
+```
+
+If you also want to remove the configured TurnEcho marketplace, run:
+
+```sh
+codex plugin marketplace remove turnecho
+```
+
+For a local checkout installed through the personal marketplace, use:
+
+```sh
+codex plugin remove turnecho@personal
+```
+
+Codex removal does not delete TurnEcho's local runtime data. The queue, worker
+log, and stored summaries remain under `~/.config/turnecho/`. Delete that
+directory only after backing up anything you need:
+
+```sh
+rm -rf ~/.config/turnecho
+```
+
+This permanently removes the local queue, logs, and stored summaries.
 
 ## Install a local checkout
 
@@ -207,13 +239,17 @@ defined in `hooks/hooks.json`.
 ## Requirements
 
 - macOS or Linux
-- Python 3.13 or newer
+- Python 3.13 or newer is required
 - [Codex CLI](https://developers.openai.com/codex/cli)
-- [uv](https://docs.astral.sh/uv/)
+- [uv](https://docs.astral.sh/uv/) is required during installation and
+  whenever Codex runs the hooks
 - a working system audio output device
 - network access during installation so KittenTTS can obtain its model files
 
-The worker lock currently uses `fcntl`, so Windows is not supported.
+TurnEcho uses `uv` to select the Python 3.13+ runtime and to run the hooks
+without dependency synchronization. Keep `uv` available on `PATH` after
+installation. The worker lock currently uses `fcntl`, so Windows is not
+supported.
 
 ## Try the hook locally
 
@@ -227,7 +263,7 @@ printf '%s' '{
   "turn_id": "manual-turn-1",
   "last_assistant_message": "TurnEcho is ready.\n\n<!-- turnecho-summary:v1\nTurnEcho is ready and speaking is configured.\n-->\n",
   "stop_hook_active": false
-}' | PYTHONPATH="$PWD/src" python3 -m turnecho.stop_hook
+}' | PLUGIN_ROOT="$PWD" PYTHONPATH="$PWD/src" uv run --project "$PWD" --no-dev --no-sync python -m turnecho.stop_hook
 ```
 
 The command prints `{}` immediately. Audio is played by the detached worker,

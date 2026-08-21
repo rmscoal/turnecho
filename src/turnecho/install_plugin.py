@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -15,8 +16,10 @@ from .runtime_preflight import validate_runtime_dependencies
 PLUGIN_NAME = "turnecho"
 MARKETPLACE_NAME = "turnecho"
 MARKETPLACE_SOURCE = "rmscoal/turnecho"
-MARKETPLACE_REF = "main"
+MARKETPLACE_REF = "v0.1.0"
 PLUGIN_SELECTOR = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
+CODEX_HOME_ENVIRONMENT_VARIABLE = "CODEX_HOME"
+PLUGIN_CACHE_DIRECTORY = Path("plugins") / "cache"
 
 
 class InstallError(RuntimeError):
@@ -112,17 +115,63 @@ def find_installed_plugin(payload: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def resolve_plugin_root(plugin: dict[str, Any]) -> Path:
-    """Resolve and validate the plugin source path reported by Codex."""
-    source = plugin.get("source")
-    if not isinstance(source, dict):
-        raise InstallError("Codex did not report TurnEcho's installed source.")
+def resolve_installed_plugin_path(payload: dict[str, Any]) -> str:
+    """Read the installed cache path returned by ``codex plugin add``."""
+    if payload.get("pluginId") != PLUGIN_SELECTOR:
+        raise InstallError("Codex did not report TurnEcho as the installed plugin.")
 
-    source_path = source.get("path")
-    if not isinstance(source_path, str) or not source_path.strip():
-        raise InstallError("Codex did not report TurnEcho's installed source path.")
+    installed_path = payload.get("installedPath")
+    if not isinstance(installed_path, str) or not installed_path.strip():
+        raise InstallError("Codex did not report TurnEcho's installed plugin path.")
 
-    plugin_root = Path(source_path).expanduser().resolve()
+    return installed_path
+
+
+def resolve_plugin_root(
+    plugin: dict[str, Any],
+    *,
+    installed_path: str | None = None,
+) -> Path:
+    """Resolve and validate the plugin runtime source path."""
+    if installed_path is not None:
+        plugin_root = Path(installed_path).expanduser().resolve()
+    else:
+        source = plugin.get("source")
+        source_path: str | None = None
+        if isinstance(source, dict) and source.get("source") in (None, "local"):
+            candidate = source.get("path")
+            if isinstance(candidate, str) and candidate.strip():
+                source_path = candidate
+
+        if source_path is not None:
+            plugin_root = Path(source_path).expanduser().resolve()
+        else:
+            version = plugin.get("version")
+            if not isinstance(version, str) or not version.strip():
+                raise InstallError(
+                    "Codex did not report TurnEcho's installed plugin version."
+                )
+
+            version_path = Path(version)
+            if version_path.is_absolute() or version_path.name != version:
+                raise InstallError(
+                    "Codex reported an invalid TurnEcho installed plugin version."
+                )
+
+            configured_codex_home = os.environ.get(CODEX_HOME_ENVIRONMENT_VARIABLE)
+            codex_home = (
+                Path(configured_codex_home).expanduser()
+                if configured_codex_home
+                else Path.home() / ".codex"
+            )
+            plugin_root = (
+                codex_home
+                / PLUGIN_CACHE_DIRECTORY
+                / MARKETPLACE_NAME
+                / PLUGIN_NAME
+                / version
+            ).resolve()
+
     if not (plugin_root / "pyproject.toml").is_file():
         raise InstallError(
             f"TurnEcho's installed source is missing pyproject.toml: {plugin_root}"
@@ -197,6 +246,7 @@ def install_plugin(*, update: bool = False) -> Path:
 
     plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
     installed_plugin = find_installed_plugin(plugin_payload)
+    installed_path: str | None = None
     plugin_added = False
 
     try:
@@ -229,14 +279,20 @@ def install_plugin(*, update: bool = False) -> Path:
                 )
 
         if installed_plugin is None or update:
-            run_checked_command(["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"])
+            install_payload = run_json_command(
+                ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
+            )
             plugin_added = installed_plugin is None
+            installed_path = resolve_installed_plugin_path(install_payload)
             plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
             installed_plugin = find_installed_plugin(plugin_payload)
             if installed_plugin is None:
                 raise InstallError("Codex did not report TurnEcho as installed.")
 
-        plugin_root = resolve_plugin_root(installed_plugin)
+        plugin_root = resolve_plugin_root(
+            installed_plugin,
+            installed_path=installed_path,
+        )
         sync_installed_runtime(plugin_root)
     except Exception as error:
         rollback_errors = rollback_fresh_install(

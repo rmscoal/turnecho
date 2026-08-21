@@ -21,7 +21,7 @@ class RepositoryMarketplaceTests(unittest.TestCase):
             {
                 "source": "url",
                 "url": "https://github.com/rmscoal/turnecho.git",
-                "ref": "main",
+                "ref": "v0.1.0",
             },
         )
         self.assertEqual(

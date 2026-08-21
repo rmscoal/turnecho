@@ -22,9 +22,24 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             "installed": [
                 {
                     "pluginId": "turnecho@turnecho",
-                    "source": {"source": "local", "path": str(plugin_root)},
+                    "version": "0.1.0",
+                    "source": {
+                        "source": "git",
+                        "url": "https://github.com/rmscoal/turnecho.git",
+                        "ref": "v0.1.0",
+                    },
                 }
             ]
+        }
+
+    def installed_result(self, plugin_root: Path) -> dict[str, object]:
+        return {
+            "pluginId": "turnecho@turnecho",
+            "name": "turnecho",
+            "marketplaceName": "turnecho",
+            "version": "0.1.0",
+            "installedPath": str(plugin_root),
+            "authPolicy": "ON_INSTALL",
         }
 
     def test_fresh_install_preflights_and_syncs_installed_plugin(self) -> None:
@@ -42,15 +57,20 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     side_effect=[
                         {"marketplaces": []},
                         {"installed": []},
+                        self.installed_result(plugin_root),
                         self.installed_payload(plugin_root),
                     ],
-                ),
+                ) as run_json,
                 patch.object(install_plugin, "run_checked_command") as run,
             ):
                 result = install_plugin.install_plugin()
 
         self.assertEqual(result, plugin_root.resolve())
         preflight.assert_called_once_with()
+        self.assertEqual(
+            run_json.call_args_list[2],
+            call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
+        )
         self.assertEqual(
             run.call_args_list,
             [
@@ -62,16 +82,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "add",
                         "rmscoal/turnecho",
                         "--ref",
-                        "main",
-                        "--json",
-                    ]
-                ),
-                call(
-                    [
-                        "codex",
-                        "plugin",
-                        "add",
-                        "turnecho@turnecho",
+                        "v0.1.0",
                         "--json",
                     ]
                 ),
@@ -114,6 +125,49 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
         run_json.assert_not_called()
 
+    def test_missing_install_path_rolls_back_fresh_codex_state(self) -> None:
+        with (
+            patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+            patch.object(install_plugin, "validate_runtime_dependencies"),
+            patch.object(
+                install_plugin,
+                "run_json_command",
+                side_effect=[
+                    {"marketplaces": []},
+                    {"installed": []},
+                    {"pluginId": "turnecho@turnecho"},
+                ],
+            ),
+            patch.object(install_plugin, "run_checked_command") as run,
+            self.assertRaises(install_plugin.InstallError),
+        ):
+            install_plugin.install_plugin()
+
+        self.assertEqual(
+            run.call_args_list[-2:],
+            [
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "remove",
+                        "turnecho@turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+            ],
+        )
+
     def test_runtime_sync_failure_rolls_back_fresh_codex_state(self) -> None:
         with TemporaryDirectory() as directory:
             plugin_root = self.create_installed_plugin(Path(directory))
@@ -138,6 +192,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     side_effect=[
                         {"marketplaces": []},
                         {"installed": []},
+                        self.installed_result(plugin_root),
                         self.installed_payload(plugin_root),
                     ],
                 ),
@@ -228,15 +283,16 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     side_effect=[
                         marketplace_payload,
                         installed_payload,
+                        self.installed_result(plugin_root),
                         installed_payload,
                     ],
-                ),
+                ) as run_json,
                 patch.object(install_plugin, "run_checked_command") as run,
             ):
                 install_plugin.install_plugin(update=True)
 
         self.assertEqual(
-            run.call_args_list[:2],
+            run.call_args_list[:1],
             [
                 call(
                     [
@@ -248,13 +304,79 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "--json",
                     ]
                 ),
+            ],
+        )
+        self.assertEqual(
+            run_json.call_args_list[2],
+            call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
+        )
+
+    def test_existing_git_plugin_uses_its_codex_cache_path(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            codex_home = root / "codex-home"
+            plugin_root = (
+                codex_home / "plugins" / "cache" / "turnecho" / "turnecho" / "0.1.0"
+            )
+            plugin_root.mkdir(parents=True)
+            (plugin_root / "pyproject.toml").write_text(
+                "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
+                encoding="utf-8",
+            )
+            marketplace_payload = {
+                "marketplaces": [
+                    {
+                        "name": "turnecho",
+                        "marketplaceSource": {
+                            "sourceType": "git",
+                            "source": "rmscoal/turnecho",
+                        },
+                    }
+                ]
+            }
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        marketplace_payload,
+                        self.installed_payload(plugin_root),
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command") as run,
+                patch.dict(
+                    install_plugin.os.environ,
+                    {"CODEX_HOME": str(codex_home)},
+                ),
+            ):
+                result = install_plugin.install_plugin()
+
+        self.assertEqual(result, plugin_root.resolve())
+        self.assertEqual(
+            run.call_args_list,
+            [
                 call(
                     [
-                        "codex",
-                        "plugin",
-                        "add",
-                        "turnecho@turnecho",
-                        "--json",
+                        "uv",
+                        "sync",
+                        "--project",
+                        str(plugin_root.resolve()),
+                        "--no-dev",
+                    ]
+                ),
+                call(
+                    [
+                        "uv",
+                        "run",
+                        "--project",
+                        str(plugin_root.resolve()),
+                        "--no-dev",
+                        "python",
+                        "-m",
+                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
