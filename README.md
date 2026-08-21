@@ -1,49 +1,124 @@
-# TurnEcho
+<div align="center">
+  <table>
+    <tr>
+      <td align="center" bgcolor="#202124">
+        <img src="assets/turnecho-logo.png" alt="TurnEcho logo" width="420">
+      </td>
+    </tr>
+  </table>
+</div>
 
-TurnEcho is a Codex plugin that reads a short summary of the agent's final
-response out loud. It turns the end of a Codex turn into something closer to a
-spoken conversation, so you can hear the result without watching the screen.
+<h1 align="center">TurnEcho</h1>
 
-TurnEcho asks the agent to append a hidden summary marker to its final
-response, then speaks only that validated summary. If the summary is missing
-or invalid, or speaking fails, TurnEcho stays silent.
+<p align="center">
+  <strong>Hear the result of every Codex turn.</strong><br>
+  A local Codex plugin that speaks a short, useful summary while keeping the
+  full response on screen.
+</p>
 
-## How it works
+<p align="center">
+  <a href="https://github.com/rmscoal/turnecho/blob/main/LICENSE">MIT</a>
+  · Python 3.13+
+  · macOS and Linux
+  · Codex plugin
+</p>
 
-1. Codex emits `UserPromptSubmit` before processing a prompt.
-2. The hook asks the agent to append one short summary marker.
-3. Codex emits a `Stop` hook after completing the turn.
-4. The hook validates the marker and adds the summary to a SQLite queue.
-5. The hook starts a detached worker and immediately returns control to Codex.
-6. One global worker loads KittenTTS and speaks queued summaries in order.
-7. The worker exits after 10 minutes without a new job.
+TurnEcho adds a lightweight audio layer to Codex. It asks the agent for one
+short spoken summary, validates that summary at the end of the turn, and
+plays it locally in the background. You can keep coding, reviewing, or step
+away from the screen while still hearing what changed.
 
-The queue prevents overlapping Codex sessions from speaking at the same time.
-Duplicate hook events for the same turn are ignored. If a worker exits while a
-job is in progress, the next worker returns that job to the queue.
+The original Codex response is never replaced or read in full. TurnEcho only
+speaks a valid summary marker appended to `last_assistant_message`.
 
-## Current status
+## Why TurnEcho
 
-TurnEcho is an early local plugin. The basic hook, queue, worker, and audio
-playback flow is implemented. Current limits are:
+Long agent turns contain useful detail, but not every moment needs another
+screen-sized response. TurnEcho separates the detailed written answer from a
+small spoken signal:
 
-- Codex is the only supported host.
-- Only the validated summary is spoken. Turns without a valid summary are
-  ignored without audio.
-- The voice is fixed to KittenTTS `Hugo`.
-- Audio uses a fixed sample rate of 24 kHz.
-- Worker locking depends on `fcntl`, so Windows is not supported.
-- Settings are constants in the source code. There is no user configuration
-  file or UI yet.
+- **Stay in the flow.** Hear the outcome, blocker, or next action without
+  opening the transcript immediately.
+- **Keep the full answer.** Codex still returns its normal response. TurnEcho
+  does not rewrite, truncate, or inject audio into the agent response.
+- **Use a local audio path.** Summary validation, queueing, text-to-speech,
+  and playback happen on the local machine after installation.
+- **Handle concurrent work safely.** Multiple Codex sessions share one SQLite
+  queue and one process lock, so summaries play sequentially instead of
+  talking over each other.
 
-## Requirements
+## Features
 
-- macOS or Linux
-- Python 3.13 or newer
-- [Codex CLI](https://developers.openai.com/codex/cli)
-- [uv](https://docs.astral.sh/uv/)
-- A working system audio output device
-- Network access during installation so KittenTTS can obtain its model files
+- **Summary-only speech:** speaks 1 to 3 short conversational sentences,
+  limited to the validated TurnEcho summary.
+- **Fast hooks:** both Codex hooks use the Python standard library and return
+  immediately. TTS model loading and playback stay out of the hook process.
+- **Persistent queue:** SQLite stores pending, processing, successful, and
+  failed jobs so audio work can continue after the hook exits.
+- **Atomic claims:** database transactions ensure that only one worker owns a
+  queued job at a time.
+- **Cross-session serialization:** an `fcntl` lock allows one worker to own
+  audio playback across Codex sessions.
+- **Duplicate protection:** repeated hook events for the same
+  `(host, session_id, turn_id)` are ignored.
+- **Crash recovery:** abandoned `processing` jobs return to `pending` when a
+  new worker takes the lock.
+- **Lazy model loading:** KittenTTS loads only when pending work exists.
+- **Quiet failure behavior:** invalid summaries, hook errors, and queue errors
+  preserve Codex's response. Worker failures are recorded in the worker log
+  and database without producing audio.
+
+## The extra LLM output
+
+TurnEcho uses a deliberate two-channel response. The visible response remains
+the normal answer for the user. The model also appends a hidden HTML comment
+that contains a compact, spoken version of the result:
+
+```text
+<!-- turnecho-summary:v1
+Implemented the queue and worker flow. Tests pass, and the next step is to review the install path.
+-->
+```
+
+The `UserPromptSubmit` hook supplies this instruction as `additionalContext`.
+When Codex emits `Stop`, TurnEcho reads only the final marker from
+`last_assistant_message`. The marker must be at the end of the message, use
+the expected format, and contain no nested comment syntax. The summary is
+normalized and capped before it enters the queue.
+
+This design keeps the speech signal close to the model's own understanding of
+the completed work while giving the runtime a small, explicit boundary to
+validate. If the marker is missing or invalid, TurnEcho does nothing and the
+normal Codex response is still returned unchanged.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[User prompt] --> C[Codex]
+    C -->|UserPromptSubmit| P[Prompt hook\nstdlib only]
+    P -->|additionalContext\nsummary instruction| C
+    C -->|visible response\nhidden summary marker| S[Stop hook\nvalidate and enqueue]
+    S -->|INSERT if new turn| Q[(SQLite queue)]
+    S -->|detached start| W[One worker process]
+    W -->|fcntl lock| L[Global worker lock]
+    W -->|atomic claim| Q
+    W --> T[KittenTTS\nlocal model]
+    T --> A[System audio output]
+```
+
+The hook path is intentionally small:
+
+1. `UserPromptSubmit` adds the summary instruction without resolving project
+   dependencies or loading the TTS model.
+2. Codex completes the turn and returns its normal response, including the
+   hidden marker when the instruction was followed.
+3. `Stop` validates the marker, inserts one deduplicated job into SQLite, and
+   starts the worker in a detached process.
+4. The worker acquires the cross-process lock, recovers abandoned jobs, claims
+   pending work atomically, generates speech, and plays audio sequentially.
+5. The worker exits after 10 minutes without new work. The model stays loaded
+   while the worker is active.
 
 ## Install from GitHub
 
@@ -53,25 +128,26 @@ Run the TurnEcho installer directly from GitHub:
 uvx --from git+https://github.com/rmscoal/turnecho.git@main turnecho-install
 ```
 
-This is the required installation path because audio is the main product. The
-installer:
+This is the recommended installation path because audio dependencies are part
+of the product. The installer:
 
-- resolves KittenTTS and `sounddevice`, loads the TTS model, and validates the
-  default 24 kHz audio output before changing Codex;
+- resolves KittenTTS and `sounddevice`;
+- loads the TTS model and validates the default 24 kHz audio output before
+  changing Codex;
 - adds the `turnecho` GitHub marketplace;
 - runs `codex plugin add turnecho@turnecho`;
 - creates the runtime in Codex's installed plugin cache; and
-- removes a newly-added plugin and marketplace if a later step fails.
+- removes a newly added plugin and marketplace if a later step fails.
 
-If the dependencies, TTS model, or audio output cannot be prepared, the command
-fails and TurnEcho is not added to Codex. A local checkout is not required. Direct
-`codex plugin add` has no dependency-preflight lifecycle, so it is an internal
-step of the installer rather than the recommended user command.
+If dependencies, model files, or the audio output cannot be prepared, the
+command fails and TurnEcho is not added to Codex. A local checkout is not
+required. Direct `codex plugin add` has no dependency-preflight lifecycle, so
+it is an internal installer step rather than the recommended user command.
 
-Both Codex hooks use only Python's standard library and the TurnEcho source.
-They never wait for dependency resolution. Only the detached audio worker uses
-the prepared `uv` runtime. Start a new Codex thread after installation and
-review the plugin hook if Codex asks for trust.
+Both hooks use only Python's standard library and the TurnEcho source. They do
+not wait for dependency resolution. Only the detached audio worker uses the
+prepared `uv` runtime. Start a new Codex thread after installation and review
+the plugin hook if Codex asks for trust.
 
 Codex installs a cached copy of the plugin. To pick up a new GitHub commit,
 run the same preflight flow in update mode:
@@ -99,9 +175,9 @@ uv run --no-dev python scripts/install_local_plugin.py
 ```
 
 The installer first runs `uv sync --no-dev`, loads the model, validates the
-default audio output, and stops if any step fails. It then creates a source link at
-`~/plugins/turnecho`, creates or updates `~/.agents/plugins/marketplace.json`,
-and installs through Codex by running:
+default audio output, and stops if any step fails. It then creates a source
+link at `~/plugins/turnecho`, creates or updates
+`~/.agents/plugins/marketplace.json`, and installs through Codex by running:
 
 ```sh
 codex plugin add turnecho@personal
@@ -120,25 +196,36 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 This updates the plugin version to a single `+codex.<timestamp>` cachebuster,
 keeps the existing marketplace entry, and reinstalls it with
 `codex plugin add turnecho@personal`. It requires the initial local marketplace
-entry to exist. This is the local equivalent of the Codex plugin-creator
-cachebuster flow.
+entry to exist.
 
 This local script is only needed for development. GitHub users should use the
 preflight installer above.
 
-The plugin metadata is in `.codex-plugin/plugin.json`, and its hooks are defined
-in `hooks/hooks.json`.
+The plugin metadata is in `.codex-plugin/plugin.json`, and its hooks are
+defined in `hooks/hooks.json`.
 
-Plugin installation support can differ between Codex releases. If your Codex
-version does not offer local plugin installation, you can test the hook from
-the repository with:
+## Requirements
+
+- macOS or Linux
+- Python 3.13 or newer
+- [Codex CLI](https://developers.openai.com/codex/cli)
+- [uv](https://docs.astral.sh/uv/)
+- a working system audio output device
+- network access during installation so KittenTTS can obtain its model files
+
+The worker lock currently uses `fcntl`, so Windows is not supported.
+
+## Try the hook locally
+
+If your Codex version does not offer local plugin installation, you can test
+the hook from the repository with:
 
 ```sh
 printf '%s' '{
   "hook_event_name": "Stop",
   "session_id": "manual-session",
   "turn_id": "manual-turn-1",
-  "last_assistant_message": "TurnEcho is ready.\n\n<!-- turnecho-summary:v1\nTurnEcho is ready and speaking is configured.\n-->",
+  "last_assistant_message": "TurnEcho is ready.\n\n<!-- turnecho-summary:v1\nTurnEcho is ready and speaking is configured.\n-->\n",
   "stop_hook_active": false
 }' | PYTHONPATH="$PWD/src" python3 -m turnecho.stop_hook
 ```
@@ -147,17 +234,33 @@ The command prints `{}` immediately. Audio is played by the detached worker,
 so it may begin shortly after the command finishes. Use a new `turn_id` for
 each manual test because TurnEcho deduplicates turns.
 
-## Local data
+## Current status and boundaries
+
+TurnEcho is an early local plugin. The hook, queue, worker, and audio playback
+flow are implemented, with these current boundaries:
+
+- Codex is the only supported host input.
+- Only a valid summary marker at the end of `last_assistant_message` is
+  spoken.
+- Turns without a valid summary are ignored without audio.
+- The voice is fixed to KittenTTS `Hugo`.
+- Audio uses a fixed sample rate of 24 kHz.
+- Settings are constants in the source code. There is no user configuration
+  file or UI yet.
+- Worker locking depends on `fcntl`, so Windows is not supported.
+
+## Local data and privacy
 
 TurnEcho creates these files in `~/.config/turnecho/`:
 
-- `turnecho.db`: SQLite queue and job history, including spoken summaries
+- `turnecho.db`: SQLite queue and job history, including stored summaries
 - `worker.lock`: process lock used to keep one audio worker active
 - `worker.log`: worker output and playback errors
 
-Response text stays in the SQLite database after playback. Do not use TurnEcho
+Summary text stays in the SQLite database after playback. Do not use TurnEcho
 for sensitive responses unless storing that text locally is acceptable. Model
 inference and audio playback run locally after the model files are available.
+Network access is needed during installation for dependencies and model files.
 
 ## Troubleshooting
 
@@ -206,22 +309,9 @@ uv run --no-dev python -m unittest discover -s tests
 ```
 
 Source code lives in `src/turnecho/`. Tests use Python's standard `unittest`
-framework and mock TTS and audio output, so the normal test suite does not play
-sound or load the model.
+framework and mock TTS and audio output, so the normal test suite does not
+play sound or load the model.
 
-## Project structure
+## License
 
-```text
-.codex-plugin/plugin.json  Codex plugin metadata
-.agents/plugins/marketplace.json  GitHub marketplace metadata
-hooks/hooks.json           Codex hook registration
-scripts/install_local_plugin.py  Local Codex marketplace installer
-scripts/update_plugin_cachebuster.py  Local update cachebuster helper
-src/turnecho/install_plugin.py  Preflighted GitHub plugin installer
-src/turnecho/prompt_hook.py  Dependency-free prompt hook
-src/turnecho/runtime_preflight.py  TTS model and audio output checks
-src/turnecho/stop_hook.py    Stop-hook validation and job creation
-src/turnecho/sqlite.py     Persistent queue and job state
-src/turnecho/worker.py     Worker lock, TTS generation, and audio playback
-tests/                     Hook, queue, and worker tests
-```
+TurnEcho is released under the [MIT License](LICENSE).

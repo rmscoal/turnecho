@@ -19,6 +19,8 @@
       "Hooks",
       "Audio"
     ],
+    "composerIcon": "./assets/turnecho-icon.png",
+    "logo": "./assets/turnecho-logo.png",
     "defaultPrompt": []
   }
 }
