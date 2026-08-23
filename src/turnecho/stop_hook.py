@@ -4,6 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .config import ConfigError, load_config
 from .constant import (
     CODEX_DEFAULT_OUTPUT_MESSAGE,
     CODEX_HOOK_STOP_EVENT_NAME,
@@ -93,6 +94,15 @@ def handle_stop_hook(raw_input: object) -> None:
     if raw_input.get("stop_hook_active", False):
         return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
 
+    try:
+        config = load_config()
+    except ConfigError as error:
+        print(error, file=sys.stderr)
+        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+
+    if not config.enabled:
+        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+
     turnecho_message = extract_turnecho_summary_from_agent_message(
         last_assistant_message
     )
@@ -107,6 +117,8 @@ def handle_stop_hook(raw_input: object) -> None:
             session_id=session_id,
             turn_id=turn_id,
             message=turnecho_message,
+            voice=config.voice,
+            speed=config.speed,
         )
     except Exception as e:
         print(e, file=sys.stderr)

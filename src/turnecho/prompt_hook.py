@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import sys
 
+from .config import ConfigError, load_config
 from .constant import (
     CODEX_DEFAULT_OUTPUT_MESSAGE,
     CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
@@ -26,6 +27,17 @@ def main() -> int:
         not isinstance(raw_input, dict)
         or raw_input.get("hook_event_name") != CODEX_HOOK_USER_PROMPT_SUBMIT_NAME
     ):
+        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return 0
+
+    try:
+        config = load_config()
+    except ConfigError as error:
+        print(error, file=sys.stderr)
+        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return 0
+
+    if not config.enabled:
         print(CODEX_DEFAULT_OUTPUT_MESSAGE)
         return 0
 

@@ -68,7 +68,11 @@ def run_in_loop(model, audio_output):
 
         # Generate audio and update job record accordingly
         try:
-            audio = model.generate(job.message, voice="Hugo")
+            audio = model.generate(
+                job.message,
+                voice=job.voice,
+                speed=job.speed,
+            )
             audio_output.play(audio, samplerate=TURNECHO_AUDIO_SAMPLE_RATE)
             audio_output.wait()
 

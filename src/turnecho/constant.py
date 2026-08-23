@@ -19,7 +19,22 @@ TURNECHO_SUMMARY_CLOSE_MARKER = "\n-->"
 TURNECHO_SUMMARY_MAX_CHARS = 500
 TURNECHO_MODEL_NAME = "KittenML/kitten-tts-nano-0.8"
 TURNECHO_AUDIO_SAMPLE_RATE = 24000
+TURNECHO_AVAILABLE_VOICES = (
+    "Bella",
+    "Jasper",
+    "Luna",
+    "Bruno",
+    "Rosie",
+    "Hugo",
+    "Kiki",
+    "Leo",
+)
+TURNECHO_DEFAULT_VOICE = "Hugo"
+TURNECHO_DEFAULT_SPEED = 1.0
+TURNECHO_MIN_SPEED = 0.5
+TURNECHO_MAX_SPEED = 2.0
 
+TURNECHO_CONFIG_FILE_PATH = "~/.config/turnecho/config.json"
 TURNECHO_SQLITE3_DB_FILE_PATH = "~/.config/turnecho/turnecho.db"
 
 TURNECHO_WORKER_LOCK_FILE_PATH_MACOS_LINUX = "~/.config/turnecho/worker.lock"

@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.scripts]
+turnecho = "turnecho.cli:main"
 turnecho-hook = "turnecho.stop_hook:main"
 turnecho-install = "turnecho.install_plugin:main"
 

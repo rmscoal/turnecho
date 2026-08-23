@@ -22,9 +22,11 @@ Current behavior matters when changing code or documentation:
 - Abandoned `processing` jobs are requeued when a new worker takes the lock.
 - The worker loads the TTS model only when pending work exists.
 - The worker processes audio sequentially and exits after an idle timeout.
+- Voice, speech speed, and enabled state are configured through the local CLI.
+- Each queued job snapshots its validated voice and speed.
 
-Do not describe planned configuration, voice selection, or additional host
-support as implemented behavior.
+Do not describe graphical configuration or additional host support as
+implemented behavior.
 
 ## Repository layout
 
@@ -37,6 +39,11 @@ support as implemented behavior.
 - `src/turnecho/runtime_preflight.py`: TTS model and audio output checks
 - `src/turnecho/sqlite.py`: SQLite schema and queue operations
 - `src/turnecho/worker.py`: process locking, recovery, TTS, and audio playback
+- `src/turnecho/config.py`: dependency-free configuration validation and writes
+- `src/turnecho/cli.py`: deterministic user configuration and runtime checks
+- `src/turnecho/cli_install.py`: managed command-link installation and rollback
+- `src/turnecho/migration.py`: transactional packaged migration runner
+- `src/turnecho/migrations/`: numbered SQLite schema migrations
 - `src/turnecho/schema.py`: standard-library queued job model
 - `src/turnecho/constant.py`: shared paths, timing, status, and host constants
 - `scripts/install_local_plugin.py`: local marketplace installer
@@ -49,6 +56,8 @@ support as implemented behavior.
   work in the hook process.
 - Keep both hook entry points dependency-free so a cold plugin runtime cannot
   delay prompt or Stop handling.
+- Keep normal configuration commands dependency-free. Only explicit runtime
+  checks and audio tests may import model or audio packages.
 - Preserve the hook's stdout contract. It must print valid JSON; `Stop` returns
   `{}` so it does not modify the agent response, while `UserPromptSubmit` may
   return its required `additionalContext` object.
@@ -97,6 +106,10 @@ For queue changes, cover deduplication, atomic claims, status transitions, and
 recovery where relevant. For hook changes, verify stdout, stderr, validation,
 and detached subprocess behavior. For worker changes, verify lock cleanup and
 both success and failure job states.
+
+For configuration changes, cover strict validation, atomic writes, concurrent
+updates, disabled hooks, and CLI exit statuses. For schema changes, cover fresh,
+existing, repeated, failed, and concurrent migration runs.
 
 Before finishing, review the complete diff and confirm documentation still
 matches actual behavior.

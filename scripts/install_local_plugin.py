@@ -16,6 +16,15 @@ from typing import Any
 
 from update_plugin_cachebuster import update_plugin_cachebuster
 
+from turnecho.cli import (
+    DEFAULT_COMMAND_PATH,
+    CommandInstallError,
+    CommandLinkState,
+    command_directory_is_on_path,
+    install_cli_command,
+    restore_cli_command,
+)
+
 DEFAULT_MARKETPLACE_PATH = Path.home() / ".agents" / "plugins" / "marketplace.json"
 DEFAULT_PLUGIN_PARENT = Path.home() / "plugins"
 DEFAULT_MARKETPLACE_NAME = "personal"
@@ -303,6 +312,7 @@ def install_plugin(
     run_codex: bool = True,
     sync_dependencies: bool = True,
     update: bool = False,
+    command_path: Path = DEFAULT_COMMAND_PATH,
 ) -> tuple[str, str]:
     """Install or update a checkout in the personal marketplace and Codex."""
     plugin_root = plugin_root.expanduser().resolve()
@@ -334,6 +344,7 @@ def install_plugin(
         if sync_dependencies:
             print(f"Would run: uv sync --project {plugin_root} --no-dev")
             print(f"Would verify the audio runtime in: {plugin_root}")
+            print(f"Would install the TurnEcho command at: {command_path}")
         if update:
             print(f"Would run: update_plugin_cachebuster.py {plugin_root}")
         if run_codex:
@@ -354,6 +365,7 @@ def install_plugin(
         plugin_link.is_symlink() and plugin_link.resolve(strict=False) == plugin_root
     )
     manifest_may_change = update
+    command_link_state: CommandLinkState | None = None
 
     try:
         if update:
@@ -361,6 +373,7 @@ def install_plugin(
 
         if sync_dependencies:
             sync_plugin_dependencies(plugin_root)
+            command_link_state = install_cli_command(plugin_root, command_path)
 
         ensure_plugin_link(plugin_link, plugin_root, force=force)
         if marketplace_changed:
@@ -370,6 +383,12 @@ def install_plugin(
             run_codex_install(plugin_name, marketplace_name)
     except Exception as error:
         rollback_errors: list[str] = []
+
+        if command_link_state is not None:
+            try:
+                restore_cli_command(command_link_state)
+            except Exception as rollback_error:
+                rollback_errors.append(f"command link: {rollback_error}")
 
         if link_may_change:
             try:
@@ -398,6 +417,13 @@ def install_plugin(
 
     print(f"TurnEcho source linked at {plugin_link}")
     print(f"Marketplace ready at {marketplace_path}")
+    if sync_dependencies:
+        print(f"TurnEcho command ready at {command_path}")
+        if not command_directory_is_on_path(command_path):
+            print(
+                f"Warning: add {command_path.parent} to PATH to run 'turnecho'.",
+                file=sys.stderr,
+            )
     if update:
         print("Updated the local plugin cachebuster before reinstalling")
     if run_codex:
@@ -457,7 +483,12 @@ def main() -> int:
             sync_dependencies=not args.skip_dependency_sync,
             update=args.update,
         )
-    except (InstallError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        CommandInstallError,
+        InstallError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(f"TurnEcho installation failed: {error}", file=sys.stderr)
         return 1
 

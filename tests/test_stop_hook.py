@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from turnecho import stop_hook
+from turnecho.config import ConfigError, TurnEchoConfig
 from turnecho.constant import TURNECHO_SUMMARY_MAX_CHARS
 
 
@@ -61,12 +62,24 @@ class HookTests(unittest.TestCase):
             ],
         )
 
-    def run_hook(self, input_message: object) -> tuple[str, str]:
+    def run_hook(
+        self,
+        input_message: object,
+        *,
+        config: TurnEchoConfig = TurnEchoConfig(),
+        config_error: ConfigError | None = None,
+    ) -> tuple[str, str]:
         stdout = io.StringIO()
         stderr = io.StringIO()
 
         with (
             patch.object(sys, "stdin", io.StringIO(json.dumps(input_message))),
+            patch.object(
+                stop_hook,
+                "load_config",
+                return_value=config,
+                side_effect=config_error,
+            ),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
@@ -102,6 +115,8 @@ class HookTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="The requested change is complete and all tests passed.",
+            voice="Hugo",
+            speed=1.0,
         )
         spawn_worker.assert_called_once_with()
         self.assertEqual(stdout, "{}\n")
@@ -138,6 +153,42 @@ class HookTests(unittest.TestCase):
         spawn_worker.assert_not_called()
         self.assertEqual(stdout, "{}\n")
         self.assertEqual(stderr, "")
+
+    def test_disabled_configuration_does_not_queue_or_spawn_worker(self) -> None:
+        input_message = self.stop_input_message(
+            "Visible response.\n\n<!-- turnecho-summary:v1\nSummary.\n-->"
+        )
+        with (
+            patch.object(stop_hook, "insert_job_db") as insert_job,
+            patch.object(stop_hook, "spawn_background_worker") as spawn_worker,
+        ):
+            stdout, stderr = self.run_hook(
+                input_message,
+                config=TurnEchoConfig(enabled=False),
+            )
+
+        insert_job.assert_not_called()
+        spawn_worker.assert_not_called()
+        self.assertEqual(stdout, "{}\n")
+        self.assertEqual(stderr, "")
+
+    def test_invalid_configuration_fails_silent_with_stderr_diagnostic(self) -> None:
+        input_message = self.stop_input_message(
+            "Visible response.\n\n<!-- turnecho-summary:v1\nSummary.\n-->"
+        )
+        with (
+            patch.object(stop_hook, "insert_job_db") as insert_job,
+            patch.object(stop_hook, "spawn_background_worker") as spawn_worker,
+        ):
+            stdout, stderr = self.run_hook(
+                input_message,
+                config_error=ConfigError("invalid config"),
+            )
+
+        insert_job.assert_not_called()
+        spawn_worker.assert_not_called()
+        self.assertEqual(stdout, "{}\n")
+        self.assertIn("invalid config", stderr)
 
     def test_non_object_input_returns_empty_output(self) -> None:
         stdout, stderr = self.run_hook([])

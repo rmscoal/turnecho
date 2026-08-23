@@ -11,6 +11,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .cli import (
+    DEFAULT_COMMAND_PATH,
+    CommandInstallError,
+    CommandLinkState,
+    command_directory_is_on_path,
+    install_cli_command,
+    restore_cli_command,
+)
 from .runtime_preflight import validate_runtime_dependencies
 
 PLUGIN_NAME = "turnecho"
@@ -227,7 +235,11 @@ def rollback_fresh_install(*, plugin_added: bool, marketplace_added: bool) -> li
     return rollback_errors
 
 
-def install_plugin(*, update: bool = False) -> Path:
+def install_plugin(
+    *,
+    update: bool = False,
+    command_path: Path = DEFAULT_COMMAND_PATH,
+) -> Path:
     """Preflight dependencies, install TurnEcho, and prepare its cached runtime."""
     require_command("codex")
     require_command("uv")
@@ -248,6 +260,7 @@ def install_plugin(*, update: bool = False) -> Path:
     installed_plugin = find_installed_plugin(plugin_payload)
     installed_path: str | None = None
     plugin_added = False
+    command_link_state: CommandLinkState | None = None
 
     try:
         if marketplace is None:
@@ -294,11 +307,20 @@ def install_plugin(*, update: bool = False) -> Path:
             installed_path=installed_path,
         )
         sync_installed_runtime(plugin_root)
+        command_link_state = install_cli_command(plugin_root, command_path)
     except Exception as error:
+        command_rollback_error: Exception | None = None
+        if command_link_state is not None:
+            try:
+                restore_cli_command(command_link_state)
+            except Exception as rollback_error:
+                command_rollback_error = rollback_error
         rollback_errors = rollback_fresh_install(
             plugin_added=plugin_added,
             marketplace_added=marketplace_added,
         )
+        if command_rollback_error is not None:
+            rollback_errors.insert(0, f"command restoration: {command_rollback_error}")
         if rollback_errors:
             raise InstallError(
                 f"Installation failed: {error}. Rollback also failed: "
@@ -327,11 +349,22 @@ def main() -> int:
     args = parse_args()
     try:
         plugin_root = install_plugin(update=args.update)
-    except (InstallError, OSError, subprocess.CalledProcessError) as error:
+    except (
+        CommandInstallError,
+        InstallError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as error:
         print(f"TurnEcho installation failed: {error}", file=sys.stderr)
         return 1
 
     print(f"Installed TurnEcho with its audio runtime at {plugin_root}")
+    print(f"Installed the TurnEcho command at {DEFAULT_COMMAND_PATH}")
+    if not command_directory_is_on_path():
+        print(
+            f"Warning: add {DEFAULT_COMMAND_PATH.parent} to PATH to run 'turnecho'.",
+            file=sys.stderr,
+        )
     print("Start a new Codex thread before testing the plugin.")
     print("If prompted, review and trust the plugin hook with /hooks.")
     return 0

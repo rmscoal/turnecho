@@ -55,6 +55,8 @@ class WorkerTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Luna",
+            speed=1.2,
             processing_status=TurnEchoJobProcessingStatus.PROCESSING.value,
             created_at=1,
             started_at=2,
@@ -70,7 +72,11 @@ class WorkerTests(unittest.TestCase):
         ):
             worker.run_in_loop(model, audio_output)
 
-        model.generate.assert_called_once_with(job.message, voice="Hugo")
+        model.generate.assert_called_once_with(
+            job.message,
+            voice="Luna",
+            speed=1.2,
+        )
         audio_output.play.assert_called_once()
         audio_output.wait.assert_called_once_with()
         update_job.assert_called_once_with(job)

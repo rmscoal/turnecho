@@ -67,6 +67,8 @@ small spoken signal:
 - **Quiet failure behavior:** invalid summaries, hook errors, and queue errors
   preserve Codex's response. Worker failures are recorded in the worker log
   and database without producing audio.
+- **Deterministic configuration:** a local CLI changes voice, speech speed, and
+  enabled state without routing through an LLM or MCP server.
 
 ## Requirements
 
@@ -108,7 +110,8 @@ of the product. The installer:
   changing Codex;
 - adds the `turnecho` GitHub marketplace;
 - runs `codex plugin add turnecho@turnecho`;
-- creates the runtime in Codex's installed plugin cache; and
+- creates the runtime in Codex's installed plugin cache;
+- installs the `turnecho` command into `~/.local/bin`; and
 - removes a newly added plugin and marketplace if a later step fails.
 
 If dependencies, model files, or the audio output cannot be prepared, the
@@ -121,6 +124,10 @@ run through `uv` with `--no-sync`, so they use the project's compatible Python
 runtime without resolving or downloading dependencies during a turn. The
 detached audio worker uses the same prepared `uv` runtime. Start a new Codex
 thread after installation and review the plugin hook if Codex asks for trust.
+
+The installer prepares both the plugin and CLI in one operation. If it reports
+that `~/.local/bin` is not on `PATH`, add that directory to your shell's `PATH`
+before running `turnecho`.
 
 The repository marketplace is defined in
 `.agents/plugins/marketplace.json`. It points Codex at the root plugin in this
@@ -143,6 +150,10 @@ link at `~/plugins/turnecho`, creates or updates
 ```sh
 codex plugin add turnecho@personal
 ```
+
+It also installs `~/.local/bin/turnecho` as a managed link to the prepared
+checkout environment. Updates switch this link only after runtime validation
+succeeds.
 
 It never replaces an existing real directory. Use `--dry-run` to inspect the
 planned changes or `--skip-codex` to prepare the local marketplace without
@@ -198,9 +209,18 @@ Remove a local-checkout installation with:
 codex plugin remove turnecho@personal
 ```
 
-Removing the plugin does not delete TurnEcho's runtime data. The queue, worker
-log, and stored summaries remain under `~/.config/turnecho/`. To remove this
-data too, first back up anything you need, then run:
+Both installation methods create a managed command link. Remove it after
+uninstalling the plugin:
+
+```sh
+rm ~/.local/bin/turnecho
+```
+
+Only run this command when that path is still the TurnEcho-managed symlink.
+
+Removing the plugin does not delete TurnEcho's runtime data. The configuration,
+queue, worker log, and stored summaries remain under `~/.config/turnecho/`. To
+remove this data too, first back up anything you need, then run:
 
 ```sh
 rm -rf ~/.config/turnecho
@@ -252,12 +272,61 @@ The hook path is intentionally small:
    dependencies or loading the TTS model.
 2. Codex completes the turn and returns its normal response, including the
    hidden marker when the instruction was followed.
-3. `Stop` validates the marker, inserts one deduplicated job into SQLite, and
-   starts the worker in a detached process.
+3. `Stop` validates the marker, inserts one deduplicated job into SQLite,
+   snapshots the configured voice and speed, and starts the worker in a
+   detached process.
 4. The worker acquires the cross-process lock, recovers abandoned jobs, claims
    pending work atomically, generates speech, and plays audio sequentially.
 5. The worker exits after 10 minutes without new work. The model stays loaded
    while the worker is active.
+
+## Configuration
+
+TurnEcho configuration is managed directly from a terminal. These commands do
+not invoke an LLM and do not require MCP:
+
+```sh
+turnecho config show
+turnecho config set voice Luna
+turnecho config set speed 1.1
+turnecho disable
+turnecho enable
+turnecho voices
+turnecho doctor
+turnecho test
+```
+
+Use `turnecho config show --json`, `turnecho voices --json`, or
+`turnecho doctor --json` for machine-readable output. `turnecho test` loads the
+TTS model and speaks a fixed local test phrase. Other configuration commands do
+not load the model.
+
+The configuration file is `~/.config/turnecho/config.json`:
+
+```json
+{
+  "schema_version": 1,
+  "enabled": true,
+  "voice": "Hugo",
+  "speed": 1.0
+}
+```
+
+Supported voices are Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, and Leo.
+Speed must be between `0.5` and `2.0`. Missing configuration uses the defaults.
+An invalid existing configuration fails silently: hooks return valid empty JSON,
+report the problem to stderr, and do not request or queue a summary.
+
+Configuration writes are locked and atomically replaced. Disabling TurnEcho
+prevents new summary instructions and queue entries. Jobs queued before it was
+disabled are still processed using the voice and speed captured with each job.
+
+The SQLite migration engine is defined in `src/turnecho/sqlite.py` and loads
+numbered DDL files from `src/turnecho/migrations/`. Applied versions and
+checksums are recorded in the database. Migrations and their ledger updates run
+in one immediate transaction. Each process performs this initialization once
+for each database path, so normal queue polling does not repeatedly take the
+migration write lock.
 
 ## Current status and boundaries
 
@@ -268,16 +337,18 @@ flow are implemented, with these current boundaries:
 - Only a valid summary marker at the end of `last_assistant_message` is
   spoken.
 - Turns without a valid summary are ignored without audio.
-- The voice is fixed to KittenTTS `Hugo`.
+- The default voice is KittenTTS `Hugo` and can be changed through the CLI.
+- Speech speed can be configured from `0.5` to `2.0`.
 - Audio uses a fixed sample rate of 24 kHz.
-- Settings are constants in the source code. There is no user configuration
-  file or UI yet.
+- There is no graphical configuration UI.
 - Worker locking depends on `fcntl`, so Windows is not supported.
 
 ## Local data and privacy
 
 TurnEcho creates these files in `~/.config/turnecho/`:
 
+- `config.json`: validated voice, speed, and enabled settings
+- `config.lock`: serializes concurrent configuration updates
 - `turnecho.db`: SQLite queue and job history, including stored summaries
 - `worker.lock`: process lock used to keep one audio worker active
 - `worker.log`: worker output and playback errors
@@ -293,6 +364,14 @@ Network access is needed during installation for dependencies and model files.
 
 Check `~/.config/turnecho/worker.log` first. Common causes are an unavailable
 audio output device, model download failure, or missing system audio support.
+
+Check configuration and the local runtime:
+
+```sh
+turnecho config show
+turnecho doctor
+turnecho test
+```
 
 Run the worker in the foreground to see errors directly:
 

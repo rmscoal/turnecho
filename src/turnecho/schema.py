@@ -10,6 +10,8 @@ class TurnEchoJob:
     session_id: str
     turn_id: str
     message: str
+    voice: str
+    speed: float
     processing_status: str
     created_at: int
     started_at: int | None = None

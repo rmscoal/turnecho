@@ -5,6 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import call, patch
 
 from turnecho import install_plugin
+from turnecho.cli import CommandInstallError
 
 
 class GitHubPluginInstallerTests(unittest.TestCase):
@@ -15,6 +16,9 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
             encoding="utf-8",
         )
+        command = plugin_root / ".venv" / "bin" / "turnecho"
+        command.parent.mkdir(parents=True)
+        command.write_text("#!/bin/sh\n", encoding="utf-8")
         return plugin_root
 
     def installed_payload(self, plugin_root: Path) -> dict[str, object]:
@@ -63,7 +67,9 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ) as run_json,
                 patch.object(install_plugin, "run_checked_command") as run,
             ):
-                result = install_plugin.install_plugin()
+                result = install_plugin.install_plugin(
+                    command_path=Path(directory) / "bin" / "turnecho"
+                )
 
         self.assertEqual(result, plugin_root.resolve())
         preflight.assert_called_once_with()
@@ -230,6 +236,57 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             ],
         )
 
+    def test_command_conflict_rolls_back_fresh_codex_state(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_installed_plugin(root)
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.write_text("unrelated", encoding="utf-8")
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        {"marketplaces": []},
+                        {"installed": []},
+                        self.installed_result(plugin_root),
+                        self.installed_payload(plugin_root),
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command") as run,
+                self.assertRaises(CommandInstallError),
+            ):
+                install_plugin.install_plugin(command_path=command_path)
+
+        self.assertEqual(
+            run.call_args_list[-2:],
+            [
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "remove",
+                        "turnecho@turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+            ],
+        )
+
     def test_existing_marketplace_must_match_github_source(self) -> None:
         marketplace = {
             "marketplaces": [
@@ -289,7 +346,10 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ) as run_json,
                 patch.object(install_plugin, "run_checked_command") as run,
             ):
-                install_plugin.install_plugin(update=True)
+                install_plugin.install_plugin(
+                    update=True,
+                    command_path=Path(directory) / "bin" / "turnecho",
+                )
 
         self.assertEqual(
             run.call_args_list[:1],
@@ -323,6 +383,9 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
                 encoding="utf-8",
             )
+            command = plugin_root / ".venv" / "bin" / "turnecho"
+            command.parent.mkdir(parents=True)
+            command.write_text("#!/bin/sh\n", encoding="utf-8")
             marketplace_payload = {
                 "marketplaces": [
                     {
@@ -352,7 +415,9 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     {"CODEX_HOME": str(codex_home)},
                 ),
             ):
-                result = install_plugin.install_plugin()
+                result = install_plugin.install_plugin(
+                    command_path=Path(directory) / "bin" / "turnecho"
+                )
 
         self.assertEqual(result, plugin_root.resolve())
         self.assertEqual(

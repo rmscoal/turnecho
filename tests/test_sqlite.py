@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -31,12 +32,16 @@ class SQLiteJobStoreTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Luna",
+            speed=1.1,
         )
         duplicate_inserted = sqlite.insert_job_db(
             host="codex",
             session_id="session-1",
             turn_id="turn-1",
             message="Duplicate event.",
+            voice="Hugo",
+            speed=1.0,
         )
         has_pending_job = sqlite.has_pending_jobs_in_db()
         job = sqlite.claim_next_job_from_db()
@@ -47,6 +52,8 @@ class SQLiteJobStoreTests(unittest.TestCase):
         self.assertIsNotNone(job)
         assert job is not None
         self.assertEqual(job.message, "Finished the requested change.")
+        self.assertEqual(job.voice, "Luna")
+        self.assertEqual(job.speed, 1.1)
         self.assertIsNone(sqlite.claim_next_job_from_db())
         self.assertFalse(sqlite.has_pending_jobs_in_db())
 
@@ -56,6 +63,8 @@ class SQLiteJobStoreTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Hugo",
+            speed=1.0,
         )
 
         claimed_job = sqlite.claim_next_job_from_db()
@@ -70,12 +79,52 @@ class SQLiteJobStoreTests(unittest.TestCase):
         self.assertIsNotNone(claimed_job.started_at)
         self.assertIsNone(duplicate_claim)
 
+    def test_insert_rejects_invalid_audio_settings_before_opening_database(
+        self,
+    ) -> None:
+        with self.assertRaises(ValueError):
+            sqlite.insert_job_db(
+                host="codex",
+                session_id="session-1",
+                turn_id="turn-1",
+                message="Finished the requested change.",
+                voice="Unknown",
+                speed=1.0,
+            )
+
+        with self.assertRaises(ValueError):
+            sqlite.insert_job_db(
+                host="codex",
+                session_id="session-1",
+                turn_id="turn-1",
+                message="Finished the requested change.",
+                voice="Hugo",
+                speed=3.0,
+            )
+
+        self.assertFalse(self.database_path.exists())
+
+    def test_database_initialization_runs_once_per_process_and_path(self) -> None:
+        with patch.object(
+            sqlite,
+            "run_migrations",
+            wraps=sqlite.run_migrations,
+        ) as run_migrations:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                list(executor.map(lambda _: sqlite._init_db(), range(4)))
+
+            sqlite.has_pending_jobs_in_db()
+
+        self.assertEqual(run_migrations.call_count, 1)
+
     def test_concurrent_workers_only_claim_job_once(self) -> None:
         sqlite.insert_job_db(
             host="codex",
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Hugo",
+            speed=1.0,
         )
 
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -91,6 +140,8 @@ class SQLiteJobStoreTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Hugo",
+            speed=1.0,
         )
         claimed_job = sqlite.claim_next_job_from_db()
         assert claimed_job is not None
@@ -119,6 +170,8 @@ class SQLiteJobStoreTests(unittest.TestCase):
             session_id="session-1",
             turn_id="turn-1",
             message="Finished the requested change.",
+            voice="Hugo",
+            speed=1.0,
         )
         first_claim = sqlite.claim_next_job_from_db()
         assert first_claim is not None

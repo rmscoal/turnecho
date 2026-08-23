@@ -31,6 +31,13 @@ class LocalPluginInstallerTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        (plugin_root / "pyproject.toml").write_text(
+            "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
+            encoding="utf-8",
+        )
+        command = plugin_root / ".venv" / "bin" / "turnecho"
+        command.parent.mkdir(parents=True)
+        command.write_text("#!/bin/sh\n", encoding="utf-8")
         return plugin_root
 
     def test_install_creates_link_marketplace_entry_and_calls_codex(self) -> None:
@@ -50,10 +57,17 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_root,
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
+                    command_path=root / "bin" / "turnecho",
                 )
 
             self.assertTrue(plugin_link.is_symlink())
             self.assertEqual(plugin_link.resolve(), plugin_root.resolve())
+            command_path = root / "bin" / "turnecho"
+            self.assertTrue(command_path.is_symlink())
+            self.assertEqual(
+                command_path.resolve(),
+                (plugin_root / ".venv" / "bin" / "turnecho").resolve(),
+            )
             marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
             self.assertEqual(marketplace["name"], "personal")
             self.assertEqual(marketplace["plugins"][0]["name"], "turnecho")
@@ -189,6 +203,7 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_root,
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
+                    command_path=root / "bin" / "turnecho",
                 )
 
             self.assertFalse(plugin_link.exists())
@@ -228,9 +243,11 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_root,
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
+                    command_path=root / "bin" / "turnecho",
                 )
 
             self.assertFalse(plugin_link.exists())
+            self.assertFalse((root / "bin" / "turnecho").exists())
             self.assertEqual(marketplace_path.read_bytes(), original_marketplace)
 
     def test_update_uses_cachebuster_and_preserves_marketplace(self) -> None:
