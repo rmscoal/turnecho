@@ -7,13 +7,16 @@ from unittest.mock import call, patch
 from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
 
+CURRENT_VERSION = "0.2.0"
+CURRENT_REF = f"v{CURRENT_VERSION}"
+
 
 class GitHubPluginInstallerTests(unittest.TestCase):
     def create_installed_plugin(self, directory: Path) -> Path:
         plugin_root = directory / "installed-turnecho"
         plugin_root.mkdir()
         (plugin_root / "pyproject.toml").write_text(
-            "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
+            f"[project]\nname = 'turnecho'\nversion = '{CURRENT_VERSION}'\n",
             encoding="utf-8",
         )
         command = plugin_root / ".venv" / "bin" / "turnecho"
@@ -21,16 +24,22 @@ class GitHubPluginInstallerTests(unittest.TestCase):
         command.write_text("#!/bin/sh\n", encoding="utf-8")
         return plugin_root
 
-    def installed_payload(self, plugin_root: Path) -> dict[str, object]:
+    def installed_payload(
+        self,
+        plugin_root: Path,
+        *,
+        version: str = CURRENT_VERSION,
+        ref: str = CURRENT_REF,
+    ) -> dict[str, object]:
         return {
             "installed": [
                 {
                     "pluginId": "turnecho@turnecho",
-                    "version": "0.1.0",
+                    "version": version,
                     "source": {
                         "source": "git",
                         "url": "https://github.com/rmscoal/turnecho.git",
-                        "ref": "v0.1.0",
+                        "ref": ref,
                     },
                 }
             ]
@@ -41,7 +50,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             "pluginId": "turnecho@turnecho",
             "name": "turnecho",
             "marketplaceName": "turnecho",
-            "version": "0.1.0",
+            "version": CURRENT_VERSION,
             "installedPath": str(plugin_root),
             "authPolicy": "ON_INSTALL",
         }
@@ -88,7 +97,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "add",
                         "rmscoal/turnecho",
                         "--ref",
-                        "v0.1.0",
+                        CURRENT_REF,
                         "--json",
                     ]
                 ),
@@ -406,7 +415,11 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     "run_json_command",
                     side_effect=[
                         marketplace_payload,
-                        self.installed_payload(plugin_root),
+                        self.installed_payload(
+                            plugin_root,
+                            version="0.1.0",
+                            ref="v0.1.0",
+                        ),
                     ],
                 ),
                 patch.object(install_plugin, "run_checked_command") as run,

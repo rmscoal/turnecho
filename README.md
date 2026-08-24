@@ -17,7 +17,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rmscoal/turnecho/blob/v0.1.0/LICENSE">MIT</a>
+  <a href="https://github.com/rmscoal/turnecho/blob/v0.2.0/LICENSE">MIT</a>
   · Python 3.13+
   · macOS and Linux
   · Codex plugin
@@ -100,7 +100,7 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.1.0 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.0 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
@@ -132,7 +132,7 @@ before running `turnecho`.
 
 The repository marketplace is defined in
 `.agents/plugins/marketplace.json`. It points Codex at the root plugin in this
-GitHub repository and pins this release to `v0.1.0`. Future releases will
+GitHub repository and pins this release to `v0.2.0`. Future releases will
 replace the tag in the installation command and marketplace entry.
 
 ### Install a local checkout
@@ -171,10 +171,10 @@ defined in `hooks/hooks.json`.
 ### Update a GitHub installation
 
 Codex installs a cached copy of the plugin. To refresh the installed
-`v0.1.0` release, run the preflight installer in update mode:
+`v0.2.0` release, run the preflight installer in update mode:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.1.0 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.0 turnecho-install --update
 ```
 
 ### Update a local checkout

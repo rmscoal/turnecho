@@ -15,7 +15,7 @@ class CliInstallTests(unittest.TestCase):
         plugin_root = root / name
         plugin_root.mkdir()
         (plugin_root / "pyproject.toml").write_text(
-            "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
+            "[project]\nname = 'turnecho'\nversion = '0.2.0'\n",
             encoding="utf-8",
         )
         command = plugin_root / ".venv" / "bin" / "turnecho"

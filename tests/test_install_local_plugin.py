@@ -25,14 +25,14 @@ class LocalPluginInstallerTests(unittest.TestCase):
             json.dumps(
                 {
                     "name": "turnecho",
-                    "version": "0.1.0",
+                    "version": "0.2.0",
                     "interface": {"category": "Productivity"},
                 }
             ),
             encoding="utf-8",
         )
         (plugin_root / "pyproject.toml").write_text(
-            "[project]\nname = 'turnecho'\nversion = '0.1.0'\n",
+            "[project]\nname = 'turnecho'\nversion = '0.2.0'\n",
             encoding="utf-8",
         )
         command = plugin_root / ".venv" / "bin" / "turnecho"
@@ -291,7 +291,7 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(manifest["version"], "0.1.0+codex.local-test")
+            self.assertEqual(manifest["version"], "0.2.0+codex.local-test")
             self.assertEqual(marketplace_path.read_bytes(), original_marketplace)
             run.assert_called_once_with(
                 ["codex", "plugin", "add", "turnecho@personal"],

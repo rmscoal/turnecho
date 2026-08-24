@@ -24,7 +24,7 @@ from .runtime_preflight import validate_runtime_dependencies
 PLUGIN_NAME = "turnecho"
 MARKETPLACE_NAME = "turnecho"
 MARKETPLACE_SOURCE = "rmscoal/turnecho"
-MARKETPLACE_REF = "v0.1.0"
+MARKETPLACE_REF = "v0.2.0"
 PLUGIN_SELECTOR = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 CODEX_HOME_ENVIRONMENT_VARIABLE = "CODEX_HOME"
 PLUGIN_CACHE_DIRECTORY = Path("plugins") / "cache"
