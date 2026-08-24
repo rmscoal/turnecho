@@ -9,9 +9,10 @@ import sys
 import time
 from pathlib import Path
 
+from .config import load_config
 from .constant import (
     TURNECHO_AUDIO_SAMPLE_RATE,
-    TURNECHO_MODEL_NAME,
+    TURNECHO_MODEL_IDS,
     TURNECHO_WORKER_IDLE_TIMEOUT_WITHOUT_JOB_SECONDS,
     TURNECHO_WORKER_LOCK_FILE_PATH_MACOS_LINUX,
     TURNECHO_WORKER_LOCK_RETRY_SECONDS,
@@ -47,8 +48,10 @@ def acquire_worker_lock():
             time.sleep(min(TURNECHO_WORKER_POLL_INTERVAL_SECONDS, remaining_seconds))
 
 
-def run_in_loop(model, audio_output):
+def run_in_loop(model_factory, audio_output):
     last_activity = time.monotonic()
+    model = None
+    loaded_model_id = None
 
     while True:
         job = claim_next_job_from_db()
@@ -68,6 +71,14 @@ def run_in_loop(model, audio_output):
 
         # Generate audio and update job record accordingly
         try:
+            config = load_config()
+            requested_model_id = TURNECHO_MODEL_IDS[config.model]
+            if requested_model_id != loaded_model_id:
+                model = None
+                loaded_model_id = None
+                model = model_factory(requested_model_id)
+                loaded_model_id = requested_model_id
+
             audio = model.generate(
                 job.message,
                 voice=job.voice,
@@ -100,8 +111,7 @@ def process():
         import sounddevice
         from kittentts import KittenTTS
 
-        model = KittenTTS(TURNECHO_MODEL_NAME)
-        run_in_loop(model, sounddevice)
+        run_in_loop(KittenTTS, sounddevice)
     finally:
         worker_lock.close()
 

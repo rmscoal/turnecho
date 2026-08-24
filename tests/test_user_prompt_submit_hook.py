@@ -84,6 +84,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
                 {
                     "schema_version": 1,
                     "enabled": False,
+                    "model": "mini",
                     "voice": "Hugo",
                     "speed": 1.0,
                 }

@@ -20,10 +20,14 @@ Current behavior matters when changing code or documentation:
 - Jobs are deduplicated by `(host, session_id, turn_id)`.
 - Only one worker may own the cross-process `fcntl` lock.
 - Abandoned `processing` jobs are requeued when a new worker takes the lock.
-- The worker loads the TTS model only when pending work exists.
+- The worker loads the TTS model only when pending work exists and reloads it
+  when the configured model changes.
 - The worker processes audio sequentially and exits after an idle timeout.
-- Voice, speech speed, and enabled state are configured through the local CLI.
+- Model, voice, speech speed, and enabled state are configured through the
+  local CLI.
 - Each queued job snapshots its validated voice and speed.
+- The worker reads the configured model at processing time, so model changes
+  apply to jobs that have not started inference.
 
 Do not describe graphical configuration or additional host support as
 implemented behavior.
@@ -31,6 +35,7 @@ implemented behavior.
 ## Repository layout
 
 - `.codex-plugin/plugin.json`: Codex plugin metadata
+- `skills/turnecho-config/SKILL.md`: LLM guidance for CLI configuration
 - `hooks/hooks.json`: plugin hook registration and command
 - `src/turnecho/stop_hook.py`: Stop-hook parsing, validation, queue insertion,
   and worker startup

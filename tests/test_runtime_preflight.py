@@ -23,7 +23,7 @@ class RuntimePreflightTests(unittest.TestCase):
             [call("kittentts"), call("sounddevice")],
         )
         sounddevice.check_output_settings.assert_called_once_with(samplerate=24000)
-        kittentts.KittenTTS.assert_called_once_with("KittenML/kitten-tts-nano-0.8")
+        kittentts.KittenTTS.assert_called_once_with("KittenML/kitten-tts-mini-0.8")
 
     def test_main_fails_when_a_runtime_module_cannot_load(self) -> None:
         with (

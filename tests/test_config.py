@@ -31,7 +31,12 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(self.config_path.exists())
 
     def test_write_and_load_configuration(self) -> None:
-        expected = TurnEchoConfig(enabled=False, voice="Luna", speed=1.2)
+        expected = TurnEchoConfig(
+            enabled=False,
+            model="micro",
+            voice="Luna",
+            speed=1.2,
+        )
 
         write_config(expected, self.config_path)
 
@@ -45,24 +50,41 @@ class ConfigTests(unittest.TestCase):
             {
                 "schema_version": 2,
                 "enabled": True,
+                "model": "mini",
                 "voice": "Hugo",
                 "speed": 1.0,
             },
             {
                 "schema_version": 1,
                 "enabled": True,
+                "voice": "Hugo",
+                "speed": 1.0,
+            },
+            {
+                "schema_version": 1,
+                "enabled": True,
+                "model": "unknown",
+                "voice": "Hugo",
+                "speed": 1.0,
+            },
+            {
+                "schema_version": 1,
+                "enabled": True,
+                "model": "mini",
                 "voice": "Unknown",
                 "speed": 1.0,
             },
             {
                 "schema_version": 1,
                 "enabled": True,
+                "model": "mini",
                 "voice": "Hugo",
                 "speed": 3.0,
             },
             {
                 "schema_version": 1,
                 "enabled": True,
+                "model": "mini",
                 "voice": "Hugo",
                 "speed": 1.0,
                 "unexpected": True,
@@ -87,7 +109,9 @@ class ConfigTests(unittest.TestCase):
         write_config(TurnEchoConfig(), self.config_path)
 
         def update(index: int) -> None:
-            if index % 2:
+            if index % 3 == 0:
+                update_config(model="micro", path=self.config_path)
+            elif index % 3 == 1:
                 update_config(voice="Luna", path=self.config_path)
             else:
                 update_config(speed=1.1, path=self.config_path)
@@ -96,6 +120,7 @@ class ConfigTests(unittest.TestCase):
             list(executor.map(update, range(20)))
 
         config = load_config(self.config_path)
+        self.assertEqual(config.model, "micro")
         self.assertEqual(config.voice, "Luna")
         self.assertEqual(config.speed, 1.1)
         with self.config_path.open(encoding="utf-8") as config_file:

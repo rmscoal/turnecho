@@ -15,14 +15,16 @@ from typing import Any
 from .constant import (
     TURNECHO_AVAILABLE_VOICES,
     TURNECHO_CONFIG_FILE_PATH,
+    TURNECHO_DEFAULT_MODEL,
     TURNECHO_DEFAULT_SPEED,
     TURNECHO_DEFAULT_VOICE,
     TURNECHO_MAX_SPEED,
     TURNECHO_MIN_SPEED,
+    TURNECHO_MODEL_IDS,
 )
 
 CONFIG_SCHEMA_VERSION = 1
-CONFIG_KEYS = {"schema_version", "enabled", "voice", "speed"}
+CONFIG_KEYS = {"schema_version", "enabled", "model", "voice", "speed"}
 
 
 class ConfigError(ValueError):
@@ -35,6 +37,7 @@ class TurnEchoConfig:
 
     schema_version: int = CONFIG_SCHEMA_VERSION
     enabled: bool = True
+    model: str = TURNECHO_DEFAULT_MODEL
     voice: str = TURNECHO_DEFAULT_VOICE
     speed: float = TURNECHO_DEFAULT_SPEED
 
@@ -54,6 +57,13 @@ def validate_config(config: TurnEchoConfig) -> TurnEchoConfig:
         )
     if not isinstance(config.enabled, bool):
         raise ConfigError("Configuration field 'enabled' must be a boolean.")
+    if not isinstance(config.model, str):
+        raise ConfigError("Configuration field 'model' must be a string.")
+    if config.model not in TURNECHO_MODEL_IDS:
+        supported = ", ".join(TURNECHO_MODEL_IDS)
+        raise ConfigError(
+            f"Unsupported model '{config.model}'. Choose from: {supported}"
+        )
     if config.voice not in TURNECHO_AVAILABLE_VOICES:
         supported = ", ".join(TURNECHO_AVAILABLE_VOICES)
         raise ConfigError(
@@ -79,6 +89,13 @@ def _config_from_payload(payload: Any) -> TurnEchoConfig:
     if not isinstance(payload, dict):
         raise ConfigError("TurnEcho configuration must be a JSON object.")
 
+    schema_version = payload.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise ConfigError("Configuration field 'schema_version' must be an integer.")
+
+    if schema_version != CONFIG_SCHEMA_VERSION:
+        raise ConfigError(f"Unsupported configuration schema version: {schema_version}")
+
     unknown_keys = set(payload) - CONFIG_KEYS
     if unknown_keys:
         names = ", ".join(sorted(unknown_keys))
@@ -89,21 +106,21 @@ def _config_from_payload(payload: Any) -> TurnEchoConfig:
         names = ", ".join(sorted(missing_keys))
         raise ConfigError(f"Missing configuration field(s): {names}")
 
-    schema_version = payload["schema_version"]
     enabled = payload["enabled"]
+    model = payload["model"]
     voice = payload["voice"]
     speed = payload["speed"]
-    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
-        raise ConfigError("Configuration field 'schema_version' must be an integer.")
     if not isinstance(enabled, bool):
         raise ConfigError("Configuration field 'enabled' must be a boolean.")
+    if not isinstance(model, str):
+        raise ConfigError("Configuration field 'model' must be a string.")
     if not isinstance(voice, str):
         raise ConfigError("Configuration field 'voice' must be a string.")
 
     return validate_config(
         TurnEchoConfig(
-            schema_version=schema_version,
             enabled=enabled,
+            model=model,
             voice=voice,
             speed=speed,
         )
@@ -173,6 +190,7 @@ def write_config(config: TurnEchoConfig, path: Path | None = None) -> None:
 def update_config(
     *,
     enabled: bool | None = None,
+    model: str | None = None,
     voice: str | None = None,
     speed: float | None = None,
     path: Path | None = None,
@@ -184,6 +202,7 @@ def update_config(
         updated = replace(
             current,
             enabled=current.enabled if enabled is None else enabled,
+            model=current.model if model is None else model,
             voice=current.voice if voice is None else voice,
             speed=current.speed if speed is None else speed,
         )
@@ -194,7 +213,7 @@ def update_config(
 
 def reset_config(key: str | None = None, path: Path | None = None) -> TurnEchoConfig:
     """Reset one setting or the complete configuration under one lock."""
-    if key not in {None, "enabled", "voice", "speed"}:
+    if key not in {None, "enabled", "model", "voice", "speed"}:
         raise ConfigError(f"Unknown reset field: {key}")
 
     config_path = resolve_config_path(path)

@@ -17,7 +17,13 @@ Do not use Markdown, URLs, file paths, code, IDs, or lists inside the summary.
 TURNECHO_SUMMARY_OPEN_MARKER = "<!-- turnecho-summary:v1\n"
 TURNECHO_SUMMARY_CLOSE_MARKER = "\n-->"
 TURNECHO_SUMMARY_MAX_CHARS = 500
-TURNECHO_MODEL_NAME = "KittenML/kitten-tts-nano-0.8"
+TURNECHO_MODEL_IDS = {
+    "mini": "KittenML/kitten-tts-mini-0.8",
+    "micro": "KittenML/kitten-tts-micro-0.8",
+    "nano": "KittenML/kitten-tts-nano-0.8-fp32",
+}
+TURNECHO_DEFAULT_MODEL = "mini"
+TURNECHO_DEFAULT_MODEL_ID = TURNECHO_MODEL_IDS[TURNECHO_DEFAULT_MODEL]
 TURNECHO_AUDIO_SAMPLE_RATE = 24000
 TURNECHO_AVAILABLE_VOICES = (
     "Bella",

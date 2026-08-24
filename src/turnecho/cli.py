@@ -25,8 +25,9 @@ from .config import (
 from .constant import (
     TURNECHO_AUDIO_SAMPLE_RATE,
     TURNECHO_AVAILABLE_VOICES,
+    TURNECHO_DEFAULT_MODEL,
     TURNECHO_DEFAULT_VOICE,
-    TURNECHO_MODEL_NAME,
+    TURNECHO_MODEL_IDS,
 )
 
 TEST_PHRASE = "TurnEcho is configured and ready."
@@ -154,6 +155,7 @@ def _print_config(config: TurnEchoConfig, *, as_json: bool) -> None:
         return
 
     print(f"enabled: {str(config.enabled).lower()}")
+    print(f"model: {config.model}")
     print(f"voice: {config.voice}")
     print(f"speed: {config.speed:g}")
 
@@ -167,7 +169,9 @@ def _config_path(_: argparse.Namespace) -> None:
 
 
 def _config_set(args: argparse.Namespace) -> None:
-    if args.key == "voice":
+    if args.key == "model":
+        config = update_config(model=args.value)
+    elif args.key == "voice":
         config = update_config(voice=args.value)
     else:
         try:
@@ -197,14 +201,31 @@ def _voices(args: argparse.Namespace) -> None:
         print(f"{voice}{suffix}")
 
 
+def _models(args: argparse.Namespace) -> None:
+    if args.json:
+        payload = {
+            "default": TURNECHO_DEFAULT_MODEL,
+            "models": dict(TURNECHO_MODEL_IDS),
+        }
+        print(json.dumps(payload, sort_keys=True))
+        return
+    for model, model_id in TURNECHO_MODEL_IDS.items():
+        suffix = " (default)" if model == TURNECHO_DEFAULT_MODEL else ""
+        print(f"{model}{suffix}: {model_id}")
+
+
 def _doctor(args: argparse.Namespace) -> None:
     config = load_config()
-    importlib.import_module("kittentts")
+    kittentts = importlib.import_module("kittentts")
     sounddevice = importlib.import_module("sounddevice")
+    model_id = TURNECHO_MODEL_IDS[config.model]
     sounddevice.check_output_settings(samplerate=TURNECHO_AUDIO_SAMPLE_RATE)
+    kittentts.KittenTTS(model_id)
     payload = {
         "status": "ok",
         "config_path": str(resolve_config_path()),
+        "model": config.model,
+        "model_id": model_id,
         "voice": config.voice,
         "speed": config.speed,
         "audio_sample_rate": TURNECHO_AUDIO_SAMPLE_RATE,
@@ -219,7 +240,7 @@ def _test_audio(_: argparse.Namespace) -> None:
     config = load_config()
     kittentts = importlib.import_module("kittentts")
     sounddevice = importlib.import_module("sounddevice")
-    model = kittentts.KittenTTS(TURNECHO_MODEL_NAME)
+    model = kittentts.KittenTTS(TURNECHO_MODEL_IDS[config.model])
     audio = model.generate(TEST_PHRASE, voice=config.voice, speed=config.speed)
     sounddevice.play(audio, samplerate=TURNECHO_AUDIO_SAMPLE_RATE)
     sounddevice.wait()
@@ -229,7 +250,7 @@ def _test_audio(_: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="turnecho",
-        description="Configure and test TurnEcho without invoking an LLM.",
+        description="Configure TurnEcho plugin.",
     )
     parser.add_argument("--version", action="version", version=_package_version())
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -247,13 +268,15 @@ def build_parser() -> argparse.ArgumentParser:
     path_parser.set_defaults(handler=_config_path)
 
     set_parser = config_subparsers.add_parser("set", help="Set one value.")
-    set_parser.add_argument("key", choices=("voice", "speed"))
+    set_parser.add_argument("key", choices=("model", "voice", "speed"))
     set_parser.add_argument("value")
     set_parser.set_defaults(handler=_config_set)
 
     reset_parser = config_subparsers.add_parser("reset", help="Reset values.")
     reset_target = reset_parser.add_mutually_exclusive_group(required=True)
-    reset_target.add_argument("key", nargs="?", choices=("enabled", "voice", "speed"))
+    reset_target.add_argument(
+        "key", nargs="?", choices=("enabled", "model", "voice", "speed")
+    )
     reset_target.add_argument("--all", action="store_true")
     reset_parser.set_defaults(handler=_config_reset)
 
@@ -265,6 +288,10 @@ def build_parser() -> argparse.ArgumentParser:
     voices_parser = subparsers.add_parser("voices", help="List supported voices.")
     voices_parser.add_argument("--json", action="store_true")
     voices_parser.set_defaults(handler=_voices)
+
+    models_parser = subparsers.add_parser("models", help="List supported models.")
+    models_parser.add_argument("--json", action="store_true")
+    models_parser.set_defaults(handler=_models)
 
     doctor_parser = subparsers.add_parser("doctor", help="Check local runtime.")
     doctor_parser.add_argument("--json", action="store_true")

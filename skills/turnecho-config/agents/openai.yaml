@@ -1,0 +1,3 @@
+interface:
+  display_name: "TurnEcho Configuration"
+  short_description: "Manage TurnEcho configuration through its CLI"

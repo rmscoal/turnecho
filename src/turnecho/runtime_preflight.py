@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 
-from .constant import TURNECHO_AUDIO_SAMPLE_RATE, TURNECHO_MODEL_NAME
+from .constant import TURNECHO_AUDIO_SAMPLE_RATE, TURNECHO_DEFAULT_MODEL_ID
 
 
 def validate_runtime_dependencies() -> None:
@@ -14,7 +14,7 @@ def validate_runtime_dependencies() -> None:
     sounddevice = importlib.import_module("sounddevice")
 
     sounddevice.check_output_settings(samplerate=TURNECHO_AUDIO_SAMPLE_RATE)
-    kittentts.KittenTTS(TURNECHO_MODEL_NAME)
+    kittentts.KittenTTS(TURNECHO_DEFAULT_MODEL_ID)
 
 
 def main() -> int:

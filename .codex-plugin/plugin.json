@@ -9,6 +9,7 @@
   },
   "repository": "https://github.com/rmscoal/turnecho",
   "license": "MIT",
+  "skills": "./skills/",
   "interface": {
     "displayName": "TurnEcho",
     "shortDescription": "Talk back on agent response.",

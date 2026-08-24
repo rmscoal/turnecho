@@ -63,12 +63,13 @@ small spoken signal:
   `(host, session_id, turn_id)` are ignored.
 - **Crash recovery:** abandoned `processing` jobs return to `pending` when a
   new worker takes the lock.
-- **Lazy model loading:** KittenTTS loads only when pending work exists.
+- **Lazy model loading:** KittenTTS loads only when pending work exists and
+  reloads when the configured model changes.
 - **Quiet failure behavior:** invalid summaries, hook errors, and queue errors
   preserve Codex's response. Worker failures are recorded in the worker log
   and database without producing audio.
-- **Deterministic configuration:** a local CLI changes voice, speech speed, and
-  enabled state without routing through an LLM or MCP server.
+- **Deterministic configuration:** a local CLI changes model, voice, speech
+  speed, and enabled state without routing through an LLM or MCP server.
 
 ## Requirements
 
@@ -78,7 +79,7 @@ small spoken signal:
 - [uv](https://docs.astral.sh/uv/), available on `PATH` during installation
   and whenever Codex runs the hooks
 - a working system audio output device
-- network access during installation so KittenTTS can obtain its model files
+- network access during installation and the first use of each selected model
 
 TurnEcho uses `uv` to select the Python 3.13+ runtime and to run the hooks
 without dependency synchronization. The worker lock uses `fcntl`, so Windows
@@ -276,9 +277,11 @@ The hook path is intentionally small:
    snapshots the configured voice and speed, and starts the worker in a
    detached process.
 4. The worker acquires the cross-process lock, recovers abandoned jobs, claims
-   pending work atomically, generates speech, and plays audio sequentially.
+   pending work atomically, loads the currently configured model, generates
+   speech, and plays audio sequentially.
 5. The worker exits after 10 minutes without new work. The model stays loaded
-   while the worker is active.
+   while the worker is active and is replaced only when the configured model
+   changes.
 
 ## Configuration
 
@@ -287,19 +290,27 @@ not invoke an LLM and do not require MCP:
 
 ```sh
 turnecho config show
+turnecho config set model micro
 turnecho config set voice Luna
 turnecho config set speed 1.1
 turnecho disable
 turnecho enable
+turnecho models
 turnecho voices
 turnecho doctor
 turnecho test
 ```
 
-Use `turnecho config show --json`, `turnecho voices --json`, or
-`turnecho doctor --json` for machine-readable output. `turnecho test` loads the
-TTS model and speaks a fixed local test phrase. Other configuration commands do
-not load the model.
+Use `turnecho config show --json`, `turnecho models --json`,
+`turnecho voices --json`, or `turnecho doctor --json` for machine-readable
+output. `turnecho doctor` downloads or loads the configured model and validates
+the audio output. `turnecho test` also speaks a fixed local test phrase. Other
+configuration commands do not load the model.
+
+The plugin also includes the `turnecho-config` skill for requests to inspect or
+change these settings through Codex. The skill uses the same CLI and does not
+edit TurnEcho's files directly. Asking Codex to configure TurnEcho invokes an
+LLM and uses tokens; running the commands directly in a terminal does not.
 
 The configuration file is `~/.config/turnecho/config.json`:
 
@@ -307,19 +318,24 @@ The configuration file is `~/.config/turnecho/config.json`:
 {
   "schema_version": 1,
   "enabled": true,
+  "model": "mini",
   "voice": "Hugo",
   "speed": 1.0
 }
 ```
 
+Supported models are `mini`, `micro`, and `nano`; `mini` is the default.
 Supported voices are Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, and Leo.
 Speed must be between `0.5` and `2.0`. Missing configuration uses the defaults.
-An invalid existing configuration fails silently: hooks return valid empty JSON,
-report the problem to stderr, and do not request or queue a summary.
+Schema version 1 includes the model setting. An invalid existing configuration
+fails silently: hooks return valid empty JSON, report the problem to stderr, and
+do not request or queue a summary.
 
 Configuration writes are locked and atomically replaced. Disabling TurnEcho
 prevents new summary instructions and queue entries. Jobs queued before it was
 disabled are still processed using the voice and speed captured with each job.
+The model is not stored on queued jobs. The worker reads it immediately before
+inference, so a model change applies to pending jobs.
 
 The SQLite migration engine is defined in `src/turnecho/sqlite.py` and loads
 numbered DDL files from `src/turnecho/migrations/`. Applied versions and
@@ -337,6 +353,7 @@ flow are implemented, with these current boundaries:
 - Only a valid summary marker at the end of `last_assistant_message` is
   spoken.
 - Turns without a valid summary are ignored without audio.
+- The default model is KittenTTS `mini`; `micro` and `nano` are also available.
 - The default voice is KittenTTS `Hugo` and can be changed through the CLI.
 - Speech speed can be configured from `0.5` to `2.0`.
 - Audio uses a fixed sample rate of 24 kHz.
@@ -347,7 +364,7 @@ flow are implemented, with these current boundaries:
 
 TurnEcho creates these files in `~/.config/turnecho/`:
 
-- `config.json`: validated voice, speed, and enabled settings
+- `config.json`: validated model, voice, speed, and enabled settings
 - `config.lock`: serializes concurrent configuration updates
 - `turnecho.db`: SQLite queue and job history, including stored summaries
 - `worker.lock`: process lock used to keep one audio worker active
@@ -356,7 +373,8 @@ TurnEcho creates these files in `~/.config/turnecho/`:
 Summary text stays in the SQLite database after playback. Do not use TurnEcho
 for sensitive responses unless storing that text locally is acceptable. Model
 inference and audio playback run locally after the model files are available.
-Network access is needed during installation for dependencies and model files.
+Network access is needed during installation and the first use of a model for
+dependencies and model files.
 
 ## Troubleshooting
 
@@ -379,7 +397,9 @@ Run the worker in the foreground to see errors directly:
 uv run --no-dev python -m turnecho.worker
 ```
 
-The worker only loads the TTS model when at least one pending job exists.
+The worker only loads the TTS model when at least one pending job exists. It
+loads a replacement before the next inference after the configured model
+changes.
 
 ### A manual test does not play again
 
@@ -388,9 +408,9 @@ repeating a manual hook test.
 
 ### Playback starts slowly
 
-The first queued response may take longer because the TTS model must be
-downloaded and loaded. A running worker keeps the model in memory while it
-waits for more jobs.
+The first queued response for a selected model may take longer because the TTS
+model must be downloaded and loaded. A running worker keeps the model in memory
+while it waits for more jobs.
 
 ## Development
 
