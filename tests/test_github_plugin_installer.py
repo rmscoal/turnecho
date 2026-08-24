@@ -324,9 +324,15 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
         run.assert_not_called()
 
-    def test_update_refreshes_marketplace_before_reinstalling(self) -> None:
+    def test_update_replaces_pinned_marketplace_before_reinstalling(self) -> None:
         with TemporaryDirectory() as directory:
             plugin_root = self.create_installed_plugin(Path(directory))
+            previous_ref = "v0.1.0"
+            previous_payload = self.installed_payload(
+                plugin_root,
+                version="0.1.0",
+                ref=previous_ref,
+            )
             installed_payload = self.installed_payload(plugin_root)
             marketplace_payload = {
                 "marketplaces": [
@@ -348,7 +354,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     "run_json_command",
                     side_effect=[
                         marketplace_payload,
-                        installed_payload,
+                        previous_payload,
                         self.installed_result(plugin_root),
                         installed_payload,
                     ],
@@ -361,15 +367,27 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 )
 
         self.assertEqual(
-            run.call_args_list[:1],
+            run.call_args_list[:2],
             [
                 call(
                     [
                         "codex",
                         "plugin",
                         "marketplace",
-                        "upgrade",
+                        "remove",
                         "turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        "rmscoal/turnecho",
+                        "--ref",
+                        CURRENT_REF,
                         "--json",
                     ]
                 ),
@@ -379,6 +397,381 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             run_json.call_args_list[2],
             call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
         )
+
+    def test_update_rejects_an_unexpected_installed_release(self) -> None:
+        with TemporaryDirectory() as directory:
+            plugin_root = self.create_installed_plugin(Path(directory))
+            previous_ref = "v0.1.0"
+            previous_payload = self.installed_payload(
+                plugin_root,
+                version="0.1.0",
+                ref=previous_ref,
+            )
+            marketplace_payload = {
+                "marketplaces": [
+                    {
+                        "name": "turnecho",
+                        "marketplaceSource": {
+                            "sourceType": "git",
+                            "source": "rmscoal/turnecho",
+                        },
+                    }
+                ]
+            }
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        marketplace_payload,
+                        previous_payload,
+                        self.installed_result(plugin_root),
+                        previous_payload,
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command") as run,
+                self.assertRaisesRegex(
+                    install_plugin.InstallError,
+                    "unexpected TurnEcho release",
+                ),
+            ):
+                install_plugin.install_plugin(
+                    update=True,
+                    command_path=Path(directory) / "bin" / "turnecho",
+                )
+
+        self.assertFalse(
+            any(command.args[0][0] == "uv" for command in run.call_args_list)
+        )
+        self.assertEqual(
+            run.call_args_list[-3:],
+            [
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        "rmscoal/turnecho",
+                        "--ref",
+                        previous_ref,
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "add",
+                        "turnecho@turnecho",
+                        "--json",
+                    ]
+                ),
+            ],
+        )
+
+    def test_failed_update_restores_previous_marketplace_and_plugin(self) -> None:
+        with TemporaryDirectory() as directory:
+            plugin_root = self.create_installed_plugin(Path(directory))
+            previous_ref = "v0.1.0"
+            previous_payload = self.installed_payload(
+                plugin_root,
+                version="0.1.0",
+                ref=previous_ref,
+            )
+            installed_payload = self.installed_payload(plugin_root)
+            marketplace_payload = {
+                "marketplaces": [
+                    {
+                        "name": "turnecho",
+                        "marketplaceSource": {
+                            "sourceType": "git",
+                            "source": "rmscoal/turnecho",
+                        },
+                    }
+                ]
+            }
+            sync_command = [
+                "uv",
+                "sync",
+                "--project",
+                str(plugin_root.resolve()),
+                "--no-dev",
+            ]
+
+            def run(command: list[str]) -> None:
+                if command == sync_command:
+                    raise subprocess.CalledProcessError(1, command)
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        marketplace_payload,
+                        previous_payload,
+                        self.installed_result(plugin_root),
+                        installed_payload,
+                    ],
+                ),
+                patch.object(
+                    install_plugin,
+                    "run_checked_command",
+                    side_effect=run,
+                ) as run_command,
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                install_plugin.install_plugin(
+                    update=True,
+                    command_path=Path(directory) / "bin" / "turnecho",
+                )
+
+        self.assertEqual(
+            run_command.call_args_list[-3:],
+            [
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        "rmscoal/turnecho",
+                        "--ref",
+                        previous_ref,
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "add",
+                        "turnecho@turnecho",
+                        "--json",
+                    ]
+                ),
+            ],
+        )
+
+    def test_failed_marketplace_replacement_restores_previous_ref(self) -> None:
+        with TemporaryDirectory() as directory:
+            plugin_root = self.create_installed_plugin(Path(directory))
+            previous_ref = "v0.1.0"
+            marketplace_payload = {
+                "marketplaces": [
+                    {
+                        "name": "turnecho",
+                        "marketplaceSource": {
+                            "sourceType": "git",
+                            "source": "rmscoal/turnecho",
+                        },
+                    }
+                ]
+            }
+            add_current_marketplace = [
+                "codex",
+                "plugin",
+                "marketplace",
+                "add",
+                "rmscoal/turnecho",
+                "--ref",
+                CURRENT_REF,
+                "--json",
+            ]
+
+            def run(command: list[str]) -> None:
+                if command == add_current_marketplace:
+                    raise subprocess.CalledProcessError(1, command)
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        marketplace_payload,
+                        self.installed_payload(
+                            plugin_root,
+                            version="0.1.0",
+                            ref=previous_ref,
+                        ),
+                    ],
+                ),
+                patch.object(
+                    install_plugin,
+                    "run_checked_command",
+                    side_effect=run,
+                ) as run_command,
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                install_plugin.install_plugin(
+                    update=True,
+                    command_path=Path(directory) / "bin" / "turnecho",
+                )
+
+        self.assertEqual(
+            run_command.call_args_list[-1],
+            call(
+                [
+                    "codex",
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    "rmscoal/turnecho",
+                    "--ref",
+                    previous_ref,
+                    "--json",
+                ]
+            ),
+        )
+
+    def test_failed_update_restores_plugin_when_marketplace_was_missing(self) -> None:
+        with TemporaryDirectory() as directory:
+            plugin_root = self.create_installed_plugin(Path(directory))
+            previous_ref = "v0.1.0"
+            previous_payload = self.installed_payload(
+                plugin_root,
+                version="0.1.0",
+                ref=previous_ref,
+            )
+            installed_payload = self.installed_payload(plugin_root)
+            sync_command = [
+                "uv",
+                "sync",
+                "--project",
+                str(plugin_root.resolve()),
+                "--no-dev",
+            ]
+
+            def run(command: list[str]) -> None:
+                if command == sync_command:
+                    raise subprocess.CalledProcessError(1, command)
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        {"marketplaces": []},
+                        previous_payload,
+                        self.installed_result(plugin_root),
+                        installed_payload,
+                    ],
+                ),
+                patch.object(
+                    install_plugin,
+                    "run_checked_command",
+                    side_effect=run,
+                ) as run_command,
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                install_plugin.install_plugin(
+                    update=True,
+                    command_path=Path(directory) / "bin" / "turnecho",
+                )
+
+        self.assertEqual(
+            run_command.call_args_list[-4:],
+            [
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "add",
+                        "rmscoal/turnecho",
+                        "--ref",
+                        previous_ref,
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "add",
+                        "turnecho@turnecho",
+                        "--json",
+                    ]
+                ),
+                call(
+                    [
+                        "codex",
+                        "plugin",
+                        "marketplace",
+                        "remove",
+                        "turnecho",
+                        "--json",
+                    ]
+                ),
+            ],
+        )
+
+    def test_marketplace_snapshot_ref_is_used_when_plugin_is_not_installed(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            marketplace_root = Path(directory)
+            manifest_path = marketplace_root / install_plugin.MARKETPLACE_MANIFEST_PATH
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(
+                """{
+  "name": "turnecho",
+  "plugins": [
+    {
+      "name": "turnecho",
+      "source": {"source": "url", "ref": "v0.1.0"}
+    }
+  ]
+}
+""",
+                encoding="utf-8",
+            )
+
+            ref = install_plugin.resolve_previous_marketplace_ref(
+                {"root": str(marketplace_root)},
+                None,
+            )
+
+        self.assertEqual(ref, "v0.1.0")
 
     def test_existing_git_plugin_uses_its_codex_cache_path(self) -> None:
         with TemporaryDirectory() as directory:

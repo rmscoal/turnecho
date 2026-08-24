@@ -24,10 +24,12 @@ from .runtime_preflight import validate_runtime_dependencies
 PLUGIN_NAME = "turnecho"
 MARKETPLACE_NAME = "turnecho"
 MARKETPLACE_SOURCE = "rmscoal/turnecho"
-MARKETPLACE_REF = "v0.2.0"
+PLUGIN_VERSION = "0.2.0"
+MARKETPLACE_REF = f"v{PLUGIN_VERSION}"
 PLUGIN_SELECTOR = f"{PLUGIN_NAME}@{MARKETPLACE_NAME}"
 CODEX_HOME_ENVIRONMENT_VARIABLE = "CODEX_HOME"
 PLUGIN_CACHE_DIRECTORY = Path("plugins") / "cache"
+MARKETPLACE_MANIFEST_PATH = Path(".agents") / "plugins" / "marketplace.json"
 
 
 class InstallError(RuntimeError):
@@ -107,6 +109,83 @@ def validate_marketplace_source(marketplace: dict[str, Any]) -> None:
         raise InstallError(
             f"Marketplace '{MARKETPLACE_NAME}' points to an unexpected source: "
             f"{source_value}"
+        )
+
+
+def resolve_plugin_source_ref(plugin: dict[str, Any]) -> str | None:
+    """Return the immutable Git ref reported for an installed plugin."""
+    source = plugin.get("source")
+    if not isinstance(source, dict) or source.get("source") != "git":
+        return None
+
+    ref = source.get("ref")
+    if not isinstance(ref, str) or not ref.strip():
+        return None
+
+    return ref
+
+
+def resolve_marketplace_plugin_ref(marketplace: dict[str, Any]) -> str:
+    """Read the TurnEcho plugin ref from a configured marketplace snapshot."""
+    root = marketplace.get("root")
+    if not isinstance(root, str) or not root.strip():
+        raise InstallError(
+            f"Marketplace '{MARKETPLACE_NAME}' does not report its snapshot root."
+        )
+
+    manifest_path = Path(root).expanduser().resolve() / MARKETPLACE_MANIFEST_PATH
+    try:
+        manifest: Any = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise InstallError(
+            f"Cannot read the configured TurnEcho marketplace: {manifest_path}"
+        ) from error
+
+    if not isinstance(manifest, dict) or manifest.get("name") != MARKETPLACE_NAME:
+        raise InstallError("The configured TurnEcho marketplace manifest is invalid.")
+
+    plugins = manifest.get("plugins")
+    if not isinstance(plugins, list):
+        raise InstallError("The configured TurnEcho marketplace has no plugin list.")
+
+    for plugin in plugins:
+        if not isinstance(plugin, dict) or plugin.get("name") != PLUGIN_NAME:
+            continue
+
+        source = plugin.get("source")
+        if not isinstance(source, dict):
+            break
+
+        ref = source.get("ref")
+        if isinstance(ref, str) and ref.strip():
+            return ref
+        break
+
+    raise InstallError("The configured TurnEcho marketplace has no release ref.")
+
+
+def resolve_previous_marketplace_ref(
+    marketplace: dict[str, Any],
+    installed_plugin: dict[str, Any] | None,
+) -> str:
+    """Resolve the ref needed to restore a replaced marketplace."""
+    if installed_plugin is not None:
+        installed_ref = resolve_plugin_source_ref(installed_plugin)
+        if installed_ref is not None:
+            return installed_ref
+
+    return resolve_marketplace_plugin_ref(marketplace)
+
+
+def validate_installed_release(plugin: dict[str, Any]) -> None:
+    """Require Codex to report the release requested by this installer."""
+    version = plugin.get("version")
+    ref = resolve_plugin_source_ref(plugin)
+    if version != PLUGIN_VERSION or ref != MARKETPLACE_REF:
+        raise InstallError(
+            "Codex installed an unexpected TurnEcho release: "
+            f"version={version!r}, ref={ref!r}; "
+            f"expected version={PLUGIN_VERSION!r}, ref={MARKETPLACE_REF!r}."
         )
 
 
@@ -205,6 +284,36 @@ def sync_installed_runtime(plugin_root: Path) -> None:
     )
 
 
+def add_marketplace(ref: str) -> None:
+    """Register the TurnEcho marketplace at an immutable release ref."""
+    run_checked_command(
+        [
+            "codex",
+            "plugin",
+            "marketplace",
+            "add",
+            MARKETPLACE_SOURCE,
+            "--ref",
+            ref,
+            "--json",
+        ]
+    )
+
+
+def remove_marketplace() -> None:
+    """Remove the configured TurnEcho marketplace registration."""
+    run_checked_command(
+        [
+            "codex",
+            "plugin",
+            "marketplace",
+            "remove",
+            MARKETPLACE_NAME,
+            "--json",
+        ]
+    )
+
+
 def rollback_fresh_install(*, plugin_added: bool, marketplace_added: bool) -> list[str]:
     """Remove only Codex state created by this installation attempt."""
     rollback_errors: list[str] = []
@@ -219,18 +328,62 @@ def rollback_fresh_install(*, plugin_added: bool, marketplace_added: bool) -> li
 
     if marketplace_added:
         try:
-            run_checked_command(
-                [
-                    "codex",
-                    "plugin",
-                    "marketplace",
-                    "remove",
-                    MARKETPLACE_NAME,
-                    "--json",
-                ]
-            )
+            remove_marketplace()
         except Exception as error:
             rollback_errors.append(f"marketplace removal: {error}")
+
+    return rollback_errors
+
+
+def rollback_marketplace_replacement(
+    *,
+    previous_ref: str,
+    replacement_added: bool,
+    restore_plugin: bool,
+) -> list[str]:
+    """Restore marketplace and plugin state after a failed update."""
+    rollback_errors: list[str] = []
+
+    if replacement_added:
+        try:
+            remove_marketplace()
+        except Exception as error:
+            rollback_errors.append(f"replacement marketplace removal: {error}")
+
+    try:
+        add_marketplace(previous_ref)
+    except Exception as error:
+        rollback_errors.append(f"previous marketplace restoration: {error}")
+        return rollback_errors
+
+    if restore_plugin:
+        try:
+            run_checked_command(["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"])
+        except Exception as error:
+            rollback_errors.append(f"previous plugin restoration: {error}")
+
+    return rollback_errors
+
+
+def rollback_plugin_without_marketplace(previous_ref: str) -> list[str]:
+    """Restore a plugin whose marketplace was absent before the update."""
+    rollback_errors: list[str] = []
+
+    try:
+        add_marketplace(previous_ref)
+    except Exception as error:
+        rollback_errors.append(f"temporary marketplace restoration: {error}")
+        return rollback_errors
+
+    try:
+        run_checked_command(["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"])
+    except Exception as error:
+        rollback_errors.append(f"previous plugin restoration: {error}")
+
+    try:
+        remove_marketplace()
+    except Exception as error:
+        rollback_errors.append(f"temporary marketplace removal: {error}")
 
     return rollback_errors
 
@@ -260,38 +413,39 @@ def install_plugin(
     installed_plugin = find_installed_plugin(plugin_payload)
     installed_path: str | None = None
     plugin_added = False
+    plugin_install_attempted = False
     command_link_state: CommandLinkState | None = None
+    previous_marketplace_ref: str | None = None
+    marketplace_replacement_started = False
+    replacement_marketplace_added = False
+    plugin_was_installed = installed_plugin is not None
+    plugin_without_marketplace_update = False
 
     try:
         if marketplace is None:
-            run_checked_command(
-                [
-                    "codex",
-                    "plugin",
-                    "marketplace",
-                    "add",
-                    MARKETPLACE_SOURCE,
-                    "--ref",
-                    MARKETPLACE_REF,
-                    "--json",
-                ]
-            )
+            if update and installed_plugin is not None:
+                previous_marketplace_ref = resolve_plugin_source_ref(installed_plugin)
+                if previous_marketplace_ref is None:
+                    raise InstallError(
+                        "Cannot preserve the installed TurnEcho release before update."
+                    )
+                plugin_without_marketplace_update = True
+            add_marketplace(MARKETPLACE_REF)
             marketplace_added = True
         else:
             validate_marketplace_source(marketplace)
             if update:
-                run_checked_command(
-                    [
-                        "codex",
-                        "plugin",
-                        "marketplace",
-                        "upgrade",
-                        MARKETPLACE_NAME,
-                        "--json",
-                    ]
+                previous_marketplace_ref = resolve_previous_marketplace_ref(
+                    marketplace,
+                    installed_plugin,
                 )
+                remove_marketplace()
+                marketplace_replacement_started = True
+                add_marketplace(MARKETPLACE_REF)
+                replacement_marketplace_added = True
 
         if installed_plugin is None or update:
+            plugin_install_attempted = True
             install_payload = run_json_command(
                 ["codex", "plugin", "add", PLUGIN_SELECTOR, "--json"]
             )
@@ -301,6 +455,7 @@ def install_plugin(
             installed_plugin = find_installed_plugin(plugin_payload)
             if installed_plugin is None:
                 raise InstallError("Codex did not report TurnEcho as installed.")
+            validate_installed_release(installed_plugin)
 
         plugin_root = resolve_plugin_root(
             installed_plugin,
@@ -319,6 +474,25 @@ def install_plugin(
             plugin_added=plugin_added,
             marketplace_added=marketplace_added,
         )
+        if marketplace_replacement_started:
+            if previous_marketplace_ref is None:
+                rollback_errors.append("previous marketplace ref was not preserved")
+            else:
+                rollback_errors.extend(
+                    rollback_marketplace_replacement(
+                        previous_ref=previous_marketplace_ref,
+                        replacement_added=replacement_marketplace_added,
+                        restore_plugin=plugin_was_installed
+                        and plugin_install_attempted,
+                    )
+                )
+        elif plugin_without_marketplace_update and plugin_install_attempted:
+            if previous_marketplace_ref is None:
+                rollback_errors.append("previous plugin ref was not preserved")
+            else:
+                rollback_errors.extend(
+                    rollback_plugin_without_marketplace(previous_marketplace_ref)
+                )
         if command_rollback_error is not None:
             rollback_errors.insert(0, f"command restoration: {command_rollback_error}")
         if rollback_errors:
@@ -339,7 +513,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--update",
         action="store_true",
-        help="Refresh the GitHub marketplace and reinstall TurnEcho.",
+        help="Replace the GitHub marketplace ref and reinstall TurnEcho.",
     )
     return parser.parse_args()
 

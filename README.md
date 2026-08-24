@@ -113,7 +113,8 @@ of the product. The installer:
 - runs `codex plugin add turnecho@turnecho`;
 - creates the runtime in Codex's installed plugin cache;
 - installs the `turnecho` command into `~/.local/bin`; and
-- removes a newly added plugin and marketplace if a later step fails.
+- removes newly added Codex state after a failed installation, or restores the
+  previous marketplace and plugin after a failed update.
 
 If dependencies, model files, or the audio output cannot be prepared, the
 command fails and TurnEcho is not added to Codex. A local checkout is not
@@ -176,6 +177,14 @@ Codex installs a cached copy of the plugin. To refresh the installed
 ```sh
 uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.0 turnecho-install --update
 ```
+
+The update installer replaces the existing immutable marketplace ref with the
+ref embedded in the requested TurnEcho release, then reinstalls the plugin.
+This allows an installation pinned to an older release to advance without
+manual marketplace removal. It verifies that Codex reports the requested
+version and source ref before preparing the runtime. If a later update step
+fails, the installer restores the previous plugin and the original marketplace
+state, including when the marketplace was already missing.
 
 ### Update a local checkout
 
