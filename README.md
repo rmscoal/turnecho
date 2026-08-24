@@ -17,10 +17,10 @@
 </p>
 
 <p align="center">
-  <a href="#license">MIT</a>
-  · <a href="#requirements">Python 3.13+</a>
-  · <a href="#requirements">macOS and Linux</a>
-  · <a href="#installation">Codex plugin</a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License: MIT"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/python-3.13%2B-blue?style=flat-square" alt="Python 3.13+"></a>
+  <a href="#requirements"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square" alt="Platform: macOS and Linux"></a>
+  <a href="#installation"><img src="https://img.shields.io/badge/Codex-plugin-black?style=flat-square" alt="Codex plugin"></a>
 </p>
 
 ## Table of contents
