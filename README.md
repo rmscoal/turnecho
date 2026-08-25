@@ -113,12 +113,17 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
 of the product. It checks the model and audio output before installing the
 plugin and the `turnecho` command.
+
+The installer keeps Codex-managed plugin source separate from the generated
+Python environment. The versioned runtime is stored under
+`~/.local/share/turnecho/runtimes/`. Codex can refresh its plugin cache without
+deleting TurnEcho's dependencies or command target.
 
 Do not replace this command with `codex plugin add`. Codex installs the plugin
 source into its cache, but it does not run TurnEcho's dependency preparation or
@@ -146,14 +151,19 @@ without adding the plugin to Codex.
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install --update
 ```
 
 The update installer replaces the pinned marketplace release, reinstalls the
-plugin, prepares the new cached runtime, and updates the managed command link.
+plugin, prepares the new stable runtime, and updates the managed command link.
 If an update fails, it attempts to restore and verify the previous plugin
 runtime before returning the original error. If rollback also fails, the
 installer reports both failures.
+
+Existing Codex tasks can remain bound to the previous plugin snapshot until a
+new task starts. Versioned runtimes are kept so those tasks can finish while
+their old plugin source still exists. If Codex has already removed that source,
+the hook returns empty JSON and does not run another Python project.
 
 Do not update TurnEcho by running `codex plugin remove` followed by
 `codex plugin add`. That recreates the Codex plugin source without preparing
@@ -165,11 +175,11 @@ If the current plugin version is still installed but its runtime or
 `turnecho` command is missing, rerun the normal installer without `--update`:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install
 ```
 
-This prepares the existing cached release again and repairs its managed command
-link without replacing the marketplace release.
+This atomically prepares the existing release runtime again and repairs its
+managed command link without replacing the marketplace release.
 
 #### Update a local checkout
 
@@ -181,23 +191,21 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 
 ### Uninstall
 
-Remove a GitHub installation with:
+Remove a GitHub installation with the TurnEcho uninstaller:
 
 ```sh
-codex plugin remove turnecho@turnecho
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install --uninstall
 ```
 
-The plugin source and Python runtime are both stored in Codex's plugin cache,
-so this command removes both. It does not remove the managed link outside that
-cache. Until that link is removed, it remains as a dangling managed symlink.
-The TurnEcho installer can recognize and safely replace that link during a
-later installation.
+This removes the GitHub plugin, its marketplace entry, all marked versioned
+runtimes, and the managed `turnecho` command link. It leaves configuration,
+queue history, logs, unrelated commands, unrelated symlinks, and unmarked
+directories unchanged.
 
-To also remove the configured TurnEcho marketplace, run:
-
-```sh
-codex plugin marketplace remove turnecho
-```
+Raw `codex plugin remove turnecho@turnecho` removes Codex's plugin source only.
+Codex does not run TurnEcho cleanup code, so it cannot remove the external
+runtime or managed command. Run the official uninstaller afterward if the raw
+Codex command was already used.
 
 Remove a local-checkout installation with:
 
@@ -205,8 +213,8 @@ Remove a local-checkout installation with:
 codex plugin remove turnecho@personal
 ```
 
-Both installation methods create a managed command link. Remove it after
-uninstalling the plugin:
+The local-checkout installer creates a command link into the checkout. Remove
+it after uninstalling the local plugin:
 
 ```sh
 rm ~/.local/bin/turnecho
@@ -260,6 +268,11 @@ TurnEcho creates these files in `~/.config/turnecho/`:
 - `worker.lock`: process lock used to keep one audio worker active
 - `worker.log`: worker output and playback errors
 
+GitHub installations also create versioned Python environments under the user
+data location described in the installation section. These environments
+contain dependencies and installed TurnEcho code, but not summaries or user
+configuration.
+
 Summary text stays in the SQLite database after playback. Do not use TurnEcho
 for sensitive responses unless storing that text locally is acceptable. Model
 inference and audio playback run locally after the model files are available.
@@ -279,12 +292,6 @@ Check configuration and the local runtime:
 turnecho config show
 turnecho doctor
 turnecho test
-```
-
-Run the worker in the foreground to see errors directly:
-
-```sh
-uv run --no-dev python -m turnecho.worker
 ```
 
 The worker only loads the TTS model when at least one pending job exists. It
@@ -322,7 +329,7 @@ printf '%s' '{
   "turn_id": "manual-turn-1",
   "last_assistant_message": "TurnEcho is ready.\n\n<!-- turnecho-summary:v1\nTurnEcho is ready and speaking is configured.\n-->\n",
   "stop_hook_active": false
-}' | PLUGIN_ROOT="$PWD" PYTHONPATH="$PWD/src" uv run --project "$PWD" --no-dev --no-sync python -m turnecho.stop_hook
+}' | PLUGIN_ROOT="$PWD" PYTHONPATH="$PWD/src" .venv/bin/python -m turnecho.stop_hook
 ```
 
 The command prints `{}` immediately. Audio is played by the detached worker,

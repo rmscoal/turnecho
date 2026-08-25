@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from turnecho.cli import (
     CommandInstallError,
     install_cli_command,
+    remove_cli_command,
     restore_cli_command,
 )
 
@@ -120,6 +121,24 @@ class CliInstallTests(unittest.TestCase):
                 restore_cli_command(state)
 
             self.assertEqual(command_path.read_text(encoding="utf-8"), "replacement")
+
+    def test_remove_leaves_unrelated_symlink_unchanged(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            unrelated = root / "other" / "turnecho"
+            unrelated.parent.mkdir()
+            unrelated.write_text("unrelated", encoding="utf-8")
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.symlink_to(unrelated)
+
+            removed = remove_cli_command(
+                command_path,
+                managed_cache_roots=(root / "runtimes",),
+            )
+
+            self.assertFalse(removed)
+            self.assertEqual(os.readlink(command_path), str(unrelated))
 
 
 if __name__ == "__main__":

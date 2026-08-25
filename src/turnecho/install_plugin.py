@@ -8,6 +8,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +19,7 @@ from .cli import (
     CommandLinkState,
     command_directory_is_on_path,
     install_cli_command,
+    remove_cli_command,
     restore_cli_command,
 )
 from .constant import (
@@ -29,6 +32,8 @@ from .constant import (
     TURNECHO_PLUGIN_NAME,
     TURNECHO_PLUGIN_SELECTOR,
     TURNECHO_PLUGIN_VERSION,
+    TURNECHO_RUNTIME_DIRECTORY,
+    TURNECHO_RUNTIME_MARKER_FILE,
 )
 from .exc import InstallError
 from .runtime_preflight import validate_runtime_dependencies
@@ -40,9 +45,21 @@ def require_command(command_name: str) -> None:
         raise InstallError(f"The '{command_name}' command was not found.")
 
 
-def run_checked_command(command: list[str]) -> None:
+@dataclass(frozen=True)
+class RuntimeInstallState:
+    """Runtime paths needed to commit or roll back an atomic replacement."""
+
+    runtime_root: Path
+    backup_root: Path | None
+
+
+def run_checked_command(
+    command: list[str],
+    *,
+    environment: dict[str, str] | None = None,
+) -> None:
     """Run a command that does not need a parsed response."""
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, env=environment)
 
 
 def run_json_command(command: list[str]) -> dict[str, Any]:
@@ -192,6 +209,19 @@ def validate_installed_release(plugin: dict[str, Any]) -> None:
         )
 
 
+def resolve_installed_plugin_version(plugin: dict[str, Any]) -> str:
+    """Return a safe version directory name reported by Codex."""
+    version = plugin.get("version")
+    if not isinstance(version, str) or not version.strip():
+        raise InstallError("Codex did not report TurnEcho's installed plugin version.")
+    version_path = Path(version)
+    if version_path.is_absolute() or version_path.name != version:
+        raise InstallError(
+            "Codex reported an invalid TurnEcho installed plugin version."
+        )
+    return version
+
+
 def find_installed_plugin(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Find the installed TurnEcho plugin entry."""
     installed_plugins = payload.get("installed", [])
@@ -275,21 +305,111 @@ def resolve_plugin_root(
     return plugin_root
 
 
-def sync_installed_runtime(plugin_root: Path) -> None:
-    """Create the installed plugin environment and verify its runtime imports."""
-    run_checked_command(["uv", "sync", "--project", str(plugin_root), "--no-dev"])
-    run_checked_command(
-        [
-            "uv",
-            "run",
-            "--project",
-            str(plugin_root),
-            "--no-dev",
-            "python",
-            "-m",
-            "turnecho.runtime_preflight",
-        ]
+def resolve_runtime_base_directory() -> Path:
+    """Return TurnEcho's stable, user-owned runtime directory."""
+    return (Path.home() / ".local" / "share" / TURNECHO_RUNTIME_DIRECTORY).resolve()
+
+
+def _runtime_marker(runtime_root: Path) -> dict[str, Any] | None:
+    marker_path = runtime_root / TURNECHO_RUNTIME_MARKER_FILE
+    try:
+        marker: Any = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def is_managed_runtime_directory(runtime_root: Path) -> bool:
+    """Return whether a directory has a valid TurnEcho ownership marker."""
+    marker = _runtime_marker(runtime_root)
+    return (
+        marker is not None
+        and marker.get("name") == TURNECHO_PLUGIN_NAME
+        and isinstance(marker.get("version"), str)
+        and bool(marker["version"])
     )
+
+
+def _remove_managed_runtime(runtime_root: Path) -> None:
+    if not is_managed_runtime_directory(runtime_root):
+        raise InstallError(f"Refusing to remove an unmanaged runtime: {runtime_root}")
+    shutil.rmtree(runtime_root)
+
+
+def prepare_installed_runtime(
+    plugin_root: Path,
+    version: str,
+    runtime_base: Path,
+) -> RuntimeInstallState:
+    """Build and atomically install a non-editable runtime outside Codex's cache."""
+    runtime_base = runtime_base.expanduser().resolve()
+    runtime_base.mkdir(parents=True, exist_ok=True)
+    runtime_root = runtime_base / version
+    if runtime_root.exists() and not is_managed_runtime_directory(runtime_root):
+        raise InstallError(f"Refusing to replace an unmanaged runtime: {runtime_root}")
+
+    staging_root = Path(
+        tempfile.mkdtemp(prefix=f".{version}.install-", dir=runtime_base)
+    )
+    backup_root: Path | None = None
+    try:
+        shutil.copy2(plugin_root / "pyproject.toml", staging_root / "pyproject.toml")
+        (staging_root / TURNECHO_RUNTIME_MARKER_FILE).write_text(
+            json.dumps({"name": TURNECHO_PLUGIN_NAME, "version": version}) + "\n",
+            encoding="utf-8",
+        )
+        environment = os.environ.copy()
+        environment["UV_PROJECT_ENVIRONMENT"] = str(staging_root / ".venv")
+        run_checked_command(
+            [
+                "uv",
+                "sync",
+                "--project",
+                str(plugin_root),
+                "--no-dev",
+                "--no-editable",
+            ],
+            environment=environment,
+        )
+        runtime_python = staging_root / ".venv" / "bin" / "python"
+        runtime_command = staging_root / ".venv" / "bin" / "turnecho"
+        if not runtime_python.is_file() or not runtime_command.is_file():
+            raise InstallError(
+                f"TurnEcho runtime commands were not created under {staging_root}"
+            )
+        run_checked_command([str(runtime_python), "-m", "turnecho.runtime_preflight"])
+
+        if runtime_root.exists():
+            backup_root = Path(
+                tempfile.mkdtemp(prefix=f".{version}.backup-", dir=runtime_base)
+            )
+            backup_root.rmdir()
+            os.replace(runtime_root, backup_root)
+        os.replace(staging_root, runtime_root)
+    except Exception:
+        if staging_root.exists():
+            shutil.rmtree(staging_root)
+        if backup_root is not None and backup_root.exists():
+            if runtime_root.exists():
+                _remove_managed_runtime(runtime_root)
+            os.replace(backup_root, runtime_root)
+        raise
+
+    return RuntimeInstallState(runtime_root=runtime_root, backup_root=backup_root)
+
+
+def commit_runtime_install(state: RuntimeInstallState) -> None:
+    """Discard the previous same-version runtime after installation succeeds."""
+    if state.backup_root is not None and state.backup_root.exists():
+        _remove_managed_runtime(state.backup_root)
+
+
+def rollback_runtime_install(state: RuntimeInstallState) -> None:
+    """Remove the new runtime and restore the previous same-version runtime."""
+    if state.runtime_root.exists():
+        _remove_managed_runtime(state.runtime_root)
+    if state.backup_root is not None and state.backup_root.exists():
+        os.replace(state.backup_root, state.runtime_root)
 
 
 def add_marketplace(ref: str) -> None:
@@ -349,6 +469,7 @@ def rollback_marketplace_replacement(
     replacement_added: bool,
     restore_plugin: bool,
     command_path: Path,
+    runtime_base: Path,
 ) -> list[str]:
     """Restore marketplace and plugin state after a failed update."""
     rollback_errors: list[str] = []
@@ -367,14 +488,18 @@ def rollback_marketplace_replacement(
 
     if restore_plugin:
         try:
-            restore_plugin_runtime(previous_ref, command_path)
+            restore_plugin_runtime(previous_ref, command_path, runtime_base)
         except Exception as error:
             rollback_errors.append(f"previous plugin runtime restoration: {error}")
 
     return rollback_errors
 
 
-def restore_plugin_runtime(previous_ref: str, command_path: Path) -> Path:
+def restore_plugin_runtime(
+    previous_ref: str,
+    command_path: Path,
+    runtime_base: Path,
+) -> Path:
     """Reinstall the selected release and rebuild its runtime and CLI link."""
     install_payload = run_json_command(
         ["codex", "plugin", "add", TURNECHO_PLUGIN_SELECTOR, "--json"]
@@ -392,18 +517,26 @@ def restore_plugin_runtime(previous_ref: str, command_path: Path) -> Path:
         )
 
     plugin_root = resolve_plugin_root({}, installed_path=installed_path)
-    sync_installed_runtime(plugin_root)
-    install_cli_command(
-        plugin_root,
-        command_path,
-        managed_cache_root=plugin_root.parent,
-    )
-    return plugin_root
+    version = resolve_installed_plugin_version(installed_plugin)
+    runtime_state = prepare_installed_runtime(plugin_root, version, runtime_base)
+    try:
+        install_cli_command(
+            runtime_state.runtime_root,
+            command_path,
+            managed_cache_root=runtime_base,
+            managed_cache_roots=(_codex_plugin_version_root(),),
+        )
+    except Exception:
+        rollback_runtime_install(runtime_state)
+        raise
+    commit_runtime_install(runtime_state)
+    return runtime_state.runtime_root
 
 
 def rollback_plugin_without_marketplace(
     previous_ref: str,
     command_path: Path,
+    runtime_base: Path,
 ) -> list[str]:
     """Restore a plugin whose marketplace was absent before the update."""
     rollback_errors: list[str] = []
@@ -415,7 +548,7 @@ def rollback_plugin_without_marketplace(
         return rollback_errors
 
     try:
-        restore_plugin_runtime(previous_ref, command_path)
+        restore_plugin_runtime(previous_ref, command_path, runtime_base)
     except Exception as error:
         rollback_errors.append(f"previous plugin runtime restoration: {error}")
 
@@ -427,12 +560,84 @@ def rollback_plugin_without_marketplace(
     return rollback_errors
 
 
+def _codex_plugin_version_root() -> Path:
+    configured_codex_home = os.environ.get(TURNECHO_CODEX_HOME_ENVIRONMENT_VARIABLE)
+    codex_home = (
+        Path(configured_codex_home).expanduser()
+        if configured_codex_home
+        else Path.home() / ".codex"
+    )
+    return (
+        codex_home
+        / TURNECHO_PLUGIN_CACHE_DIRECTORY
+        / TURNECHO_MARKETPLACE_NAME
+        / TURNECHO_PLUGIN_NAME
+    ).resolve()
+
+
+def remove_managed_runtimes(runtime_base: Path) -> int:
+    """Remove only marked TurnEcho runtimes from the managed runtime directory."""
+    runtime_base = runtime_base.expanduser().resolve()
+    if not runtime_base.is_dir():
+        return 0
+
+    removed = 0
+    for child in runtime_base.iterdir():
+        if child.is_dir() and is_managed_runtime_directory(child):
+            _remove_managed_runtime(child)
+            removed += 1
+    try:
+        runtime_base.rmdir()
+        runtime_base.parent.rmdir()
+    except OSError:
+        pass
+    return removed
+
+
+def uninstall_plugin(
+    *,
+    command_path: Path = DEFAULT_COMMAND_PATH,
+    runtime_base: Path | None = None,
+) -> tuple[bool, int]:
+    """Remove Codex state plus only TurnEcho-owned runtime and command files."""
+    require_command("codex")
+    runtime_base = (
+        resolve_runtime_base_directory()
+        if runtime_base is None
+        else runtime_base.expanduser().resolve()
+    )
+
+    plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
+    installed_plugin = find_installed_plugin(plugin_payload)
+    marketplace_payload = run_json_command(
+        ["codex", "plugin", "marketplace", "list", "--json"]
+    )
+    marketplace = find_marketplace(marketplace_payload)
+    if marketplace is not None:
+        validate_marketplace_source(marketplace)
+
+    if installed_plugin is not None:
+        run_checked_command(
+            ["codex", "plugin", "remove", TURNECHO_PLUGIN_SELECTOR, "--json"]
+        )
+    if marketplace is not None:
+        remove_marketplace()
+
+    command_removed = remove_cli_command(
+        command_path,
+        managed_cache_roots=(runtime_base, _codex_plugin_version_root()),
+    )
+    runtime_count = remove_managed_runtimes(runtime_base)
+    return command_removed, runtime_count
+
+
 def install_plugin(
     *,
     update: bool = False,
     command_path: Path = DEFAULT_COMMAND_PATH,
+    runtime_base: Path | None = None,
 ) -> Path:
-    """Preflight dependencies, install TurnEcho, and prepare its cached runtime."""
+    """Preflight dependencies, install TurnEcho, and prepare its stable runtime."""
     require_command("codex")
     require_command("uv")
 
@@ -459,6 +664,12 @@ def install_plugin(
     replacement_marketplace_added = False
     plugin_was_installed = installed_plugin is not None
     plugin_without_marketplace_update = False
+    runtime_base = (
+        resolve_runtime_base_directory()
+        if runtime_base is None
+        else runtime_base.expanduser().resolve()
+    )
+    runtime_state: RuntimeInstallState | None = None
 
     try:
         if marketplace is None:
@@ -500,11 +711,17 @@ def install_plugin(
             installed_plugin,
             installed_path=installed_path,
         )
-        sync_installed_runtime(plugin_root)
-        command_link_state = install_cli_command(
+        version = resolve_installed_plugin_version(installed_plugin)
+        runtime_state = prepare_installed_runtime(
             plugin_root,
+            version,
+            runtime_base,
+        )
+        command_link_state = install_cli_command(
+            runtime_state.runtime_root,
             command_path,
-            managed_cache_root=plugin_root.parent,
+            managed_cache_root=runtime_base,
+            managed_cache_roots=(_codex_plugin_version_root(),),
         )
     except Exception as error:
         command_rollback_error: Exception | None = None
@@ -513,6 +730,12 @@ def install_plugin(
                 restore_cli_command(command_link_state)
             except Exception as rollback_error:
                 command_rollback_error = rollback_error
+        if runtime_state is not None:
+            try:
+                rollback_runtime_install(runtime_state)
+            except Exception as rollback_error:
+                if command_rollback_error is None:
+                    command_rollback_error = rollback_error
         rollback_errors = rollback_fresh_install(
             plugin_added=plugin_added,
             marketplace_added=marketplace_added,
@@ -528,6 +751,7 @@ def install_plugin(
                         restore_plugin=plugin_was_installed
                         and plugin_install_attempted,
                         command_path=command_path,
+                        runtime_base=runtime_base,
                     )
                 )
         elif plugin_without_marketplace_update and plugin_install_attempted:
@@ -538,6 +762,7 @@ def install_plugin(
                     rollback_plugin_without_marketplace(
                         previous_marketplace_ref,
                         command_path,
+                        runtime_base,
                     )
                 )
         if command_rollback_error is not None:
@@ -549,7 +774,10 @@ def install_plugin(
             ) from error
         raise
 
-    return plugin_root
+    if runtime_state is None:
+        raise InstallError("TurnEcho runtime installation did not complete.")
+    commit_runtime_install(runtime_state)
+    return runtime_state.runtime_root
 
 
 def parse_args() -> argparse.Namespace:
@@ -557,10 +785,16 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Install TurnEcho with required audio dependency preflight."
     )
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
         "--update",
         action="store_true",
         help="Replace the GitHub marketplace ref and reinstall TurnEcho.",
+    )
+    action.add_argument(
+        "--uninstall",
+        action="store_true",
+        help="Remove the GitHub plugin, marketplace, runtime, and managed command.",
     )
     return parser.parse_args()
 
@@ -569,6 +803,18 @@ def main() -> int:
     """Install TurnEcho and report a concise result for terminal users."""
     args = parse_args()
     try:
+        if args.uninstall:
+            command_removed, runtime_count = uninstall_plugin()
+            print("Removed the TurnEcho GitHub plugin and marketplace.")
+            print(f"Removed {runtime_count} managed TurnEcho runtime(s).")
+            if command_removed:
+                print(f"Removed the TurnEcho command at {DEFAULT_COMMAND_PATH}")
+            else:
+                print(
+                    f"Left the command path unchanged because it was not a "
+                    f"TurnEcho-managed link: {DEFAULT_COMMAND_PATH}"
+                )
+            return 0
         plugin_root = install_plugin(update=args.update)
     except (
         CommandInstallError,

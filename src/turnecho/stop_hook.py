@@ -1,5 +1,4 @@
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,20 +19,7 @@ def spawn_background_worker() -> None:
     log_path = Path(TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX).expanduser()
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    plugin_root = os.environ.get("PLUGIN_ROOT")
-    if plugin_root:
-        worker_command = [
-            "uv",
-            "run",
-            "--project",
-            plugin_root,
-            "--no-dev",
-            "python",
-            "-m",
-            "turnecho.worker",
-        ]
-    else:
-        worker_command = [sys.executable, "-m", "turnecho.worker"]
+    worker_command = [sys.executable, "-m", "turnecho.worker"]
 
     with log_path.open("ab") as log_file:
         subprocess.Popen(

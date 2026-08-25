@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2 - 2026-08-25
+
+- Store versioned, non-editable Python runtimes outside the Codex-managed
+  plugin cache so rematerializing a plugin does not delete its environment.
+- Run hooks through a guarded launcher that points `uv` at the stable runtime,
+  preventing fallback to the current workspace when a plugin root is missing.
+- Return valid empty JSON when the bound plugin source or runtime is missing.
+- Prepare same-version repairs atomically and restore the previous runtime and
+  managed command when an update fails.
+- Add an official GitHub uninstall path that removes marked runtimes and the
+  managed command without changing unrelated files.
+- Document new-task update boundaries, repair behavior, stable runtime storage,
+  troubleshooting, and external runtime cleanup.
+
 ## 0.2.1 - 2026-08-25
 
 - Rebuild and verify the previous cached runtime when an update rollback

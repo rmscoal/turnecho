@@ -92,6 +92,7 @@ def install_cli_command(
     command_path: Path = DEFAULT_COMMAND_PATH,
     *,
     managed_cache_root: Path | None = None,
+    managed_cache_roots: Sequence[Path] = (),
 ) -> CommandLinkState:
     """Atomically point the user command at the installed plugin runtime."""
     plugin_root = plugin_root.expanduser().resolve()
@@ -110,12 +111,12 @@ def install_cli_command(
         current_target = (command_path.parent / original_target).resolve()
         if current_target == source.resolve():
             return CommandLinkState(command_path, original_target, source, False)
-        is_missing_managed_command = (
-            managed_cache_root is not None
-            and _is_missing_managed_cache_command(
-                current_target,
-                managed_cache_root,
-            )
+        cache_roots = (
+            (managed_cache_root,) if managed_cache_root is not None else ()
+        ) + tuple(managed_cache_roots)
+        is_missing_managed_command = any(
+            _is_missing_managed_cache_command(current_target, cache_root)
+            for cache_root in cache_roots
         )
         if (
             not _is_turnecho_environment_command(current_target)
@@ -157,6 +158,29 @@ def restore_cli_command(state: CommandLinkState) -> None:
     if state.original_target is not None:
         state.path.parent.mkdir(parents=True, exist_ok=True)
         state.path.symlink_to(state.original_target)
+
+
+def remove_cli_command(
+    command_path: Path = DEFAULT_COMMAND_PATH,
+    *,
+    managed_cache_roots: Sequence[Path] = (),
+) -> bool:
+    """Remove a TurnEcho-managed command link and leave all other paths alone."""
+    command_path = command_path.expanduser()
+    if not command_path.is_symlink():
+        return False
+
+    original_target = os.readlink(command_path)
+    current_target = (command_path.parent / original_target).resolve()
+    is_managed = _is_turnecho_environment_command(current_target) or any(
+        _is_missing_managed_cache_command(current_target, cache_root)
+        for cache_root in managed_cache_roots
+    )
+    if not is_managed:
+        return False
+
+    command_path.unlink()
+    return True
 
 
 def command_directory_is_on_path(command_path: Path = DEFAULT_COMMAND_PATH) -> bool:

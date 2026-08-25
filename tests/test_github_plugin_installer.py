@@ -1,3 +1,5 @@
+import json
+import shutil
 import subprocess
 import unittest
 from pathlib import Path
@@ -8,11 +10,42 @@ from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
 from turnecho.constant import TURNECHO_MARKETPLACE_MANIFEST_PATH
 
-CURRENT_VERSION = "0.2.1"
+CURRENT_VERSION = "0.2.2"
 CURRENT_REF = f"v{CURRENT_VERSION}"
 
 
 class GitHubPluginInstallerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.runtime_patcher = patch.object(
+            install_plugin,
+            "prepare_installed_runtime",
+            side_effect=self.prepare_runtime,
+        )
+        self.runtime_mock = self.runtime_patcher.start()
+        self.addCleanup(self.runtime_patcher.stop)
+
+    def prepare_runtime(
+        self,
+        plugin_root: Path,
+        version: str,
+        runtime_base: Path,
+    ) -> install_plugin.RuntimeInstallState:
+        del runtime_base
+        runtime_root = plugin_root.parent / "managed-runtimes" / version
+        runtime_root.mkdir(parents=True, exist_ok=True)
+        (runtime_root / "pyproject.toml").write_text(
+            f"[project]\nname = 'turnecho'\nversion = '{version}'\n",
+            encoding="utf-8",
+        )
+        (runtime_root / install_plugin.TURNECHO_RUNTIME_MARKER_FILE).write_text(
+            json.dumps({"name": "turnecho", "version": version}),
+            encoding="utf-8",
+        )
+        command = runtime_root / ".venv" / "bin" / "turnecho"
+        command.parent.mkdir(parents=True, exist_ok=True)
+        command.write_text("#!/bin/sh\n", encoding="utf-8")
+        return install_plugin.RuntimeInstallState(runtime_root, None)
+
     def create_installed_plugin(
         self,
         directory: Path,
@@ -92,7 +125,10 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     command_path=Path(directory) / "bin" / "turnecho"
                 )
 
-        self.assertEqual(result, plugin_root.resolve())
+        self.assertEqual(
+            result,
+            (plugin_root.parent / "managed-runtimes" / CURRENT_VERSION).resolve(),
+        )
         preflight.assert_called_once_with()
         self.assertEqual(
             run_json.call_args_list[2],
@@ -111,27 +147,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "--ref",
                         CURRENT_REF,
                         "--json",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "sync",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                        "python",
-                        "-m",
-                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
@@ -165,11 +180,21 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ),
                 patch.object(install_plugin, "run_checked_command"),
             ):
-                install_plugin.install_plugin(command_path=command_path)
+                install_plugin.install_plugin(
+                    command_path=command_path,
+                    runtime_base=cache_root,
+                )
 
             self.assertEqual(
                 command_path.resolve(),
-                (plugin_root / ".venv" / "bin" / "turnecho").resolve(),
+                (
+                    plugin_root.parent
+                    / "managed-runtimes"
+                    / CURRENT_VERSION
+                    / ".venv"
+                    / "bin"
+                    / "turnecho"
+                ).resolve(),
             )
 
     def test_runtime_preflight_failure_does_not_change_codex(self) -> None:
@@ -210,6 +235,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 install_plugin.restore_plugin_runtime(
                     "v0.1.0",
                     root / "bin" / "turnecho",
+                    root / "runtimes",
                 )
 
         run.assert_not_called()
@@ -260,17 +286,8 @@ class GitHubPluginInstallerTests(unittest.TestCase):
     def test_runtime_sync_failure_rolls_back_fresh_codex_state(self) -> None:
         with TemporaryDirectory() as directory:
             plugin_root = self.create_installed_plugin(Path(directory))
-            sync_command = [
-                "uv",
-                "sync",
-                "--project",
-                str(plugin_root.resolve()),
-                "--no-dev",
-            ]
-
-            def run(command: list[str]) -> None:
-                if command == sync_command:
-                    raise subprocess.CalledProcessError(1, command)
+            runtime_error = subprocess.CalledProcessError(1, ["uv", "sync"])
+            self.runtime_mock.side_effect = runtime_error
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
@@ -288,7 +305,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 patch.object(
                     install_plugin,
                     "run_checked_command",
-                    side_effect=run,
                 ) as run_command,
                 self.assertRaises(subprocess.CalledProcessError),
             ):
@@ -524,7 +540,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
         )
         self.assertEqual(
-            run.call_args_list[-4:],
+            run.call_args_list[-2:],
             [
                 call(
                     [
@@ -546,27 +562,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "--ref",
                         previous_ref,
                         "--json",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "sync",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                        "python",
-                        "-m",
-                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
@@ -600,17 +595,17 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     }
                 ]
             }
-            sync_command = [
-                "uv",
-                "sync",
-                "--project",
-                str(plugin_root.resolve()),
-                "--no-dev",
-            ]
 
-            def run(command: list[str]) -> None:
-                if command == sync_command:
-                    raise subprocess.CalledProcessError(1, command)
+            def prepare_runtime(
+                candidate_root: Path,
+                version: str,
+                runtime_base: Path,
+            ) -> install_plugin.RuntimeInstallState:
+                if candidate_root == plugin_root.resolve():
+                    raise subprocess.CalledProcessError(1, ["uv", "sync"])
+                return self.prepare_runtime(candidate_root, version, runtime_base)
+
+            self.runtime_mock.side_effect = prepare_runtime
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
@@ -630,7 +625,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 patch.object(
                     install_plugin,
                     "run_checked_command",
-                    side_effect=run,
                 ) as run_command,
                 self.assertRaises(subprocess.CalledProcessError),
             ):
@@ -641,7 +635,14 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             self.assertEqual(
                 command_path.resolve(),
-                (previous_root / ".venv" / "bin" / "turnecho").resolve(),
+                (
+                    previous_root.parent
+                    / "managed-runtimes"
+                    / "0.1.0"
+                    / ".venv"
+                    / "bin"
+                    / "turnecho"
+                ).resolve(),
             )
 
         self.assertEqual(
@@ -649,7 +650,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
         )
         self.assertEqual(
-            run_command.call_args_list[-4:],
+            run_command.call_args_list[-2:],
             [
                 call(
                     [
@@ -671,27 +672,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "--ref",
                         previous_ref,
                         "--json",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "sync",
-                        "--project",
-                        str(previous_root.resolve()),
-                        "--no-dev",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "--project",
-                        str(previous_root.resolve()),
-                        "--no-dev",
-                        "python",
-                        "-m",
-                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
@@ -787,17 +767,17 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ref=previous_ref,
             )
             installed_payload = self.installed_payload(plugin_root)
-            sync_command = [
-                "uv",
-                "sync",
-                "--project",
-                str(plugin_root.resolve()),
-                "--no-dev",
-            ]
 
-            def run(command: list[str]) -> None:
-                if command == sync_command:
-                    raise subprocess.CalledProcessError(1, command)
+            def prepare_runtime(
+                candidate_root: Path,
+                version: str,
+                runtime_base: Path,
+            ) -> install_plugin.RuntimeInstallState:
+                if candidate_root == plugin_root.resolve():
+                    raise subprocess.CalledProcessError(1, ["uv", "sync"])
+                return self.prepare_runtime(candidate_root, version, runtime_base)
+
+            self.runtime_mock.side_effect = prepare_runtime
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
@@ -817,7 +797,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 patch.object(
                     install_plugin,
                     "run_checked_command",
-                    side_effect=run,
                 ) as run_command,
                 self.assertRaises(subprocess.CalledProcessError),
             ):
@@ -828,7 +807,14 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             self.assertEqual(
                 command_path.resolve(),
-                (previous_root / ".venv" / "bin" / "turnecho").resolve(),
+                (
+                    previous_root.parent
+                    / "managed-runtimes"
+                    / "0.1.0"
+                    / ".venv"
+                    / "bin"
+                    / "turnecho"
+                ).resolve(),
             )
 
         self.assertEqual(
@@ -836,7 +822,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
         )
         self.assertEqual(
-            run_command.call_args_list[-5:],
+            run_command.call_args_list[-3:],
             [
                 call(
                     [
@@ -858,27 +844,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         "--ref",
                         previous_ref,
                         "--json",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "sync",
-                        "--project",
-                        str(previous_root.resolve()),
-                        "--no-dev",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "--project",
-                        str(previous_root.resolve()),
-                        "--no-dev",
-                        "python",
-                        "-m",
-                        "turnecho.runtime_preflight",
                     ]
                 ),
                 call(
@@ -974,33 +939,186 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     command_path=Path(directory) / "bin" / "turnecho"
                 )
 
-        self.assertEqual(result, plugin_root.resolve())
         self.assertEqual(
-            run.call_args_list,
-            [
-                call(
-                    [
-                        "uv",
-                        "sync",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                    ]
-                ),
-                call(
-                    [
-                        "uv",
-                        "run",
-                        "--project",
-                        str(plugin_root.resolve()),
-                        "--no-dev",
-                        "python",
-                        "-m",
-                        "turnecho.runtime_preflight",
-                    ]
-                ),
-            ],
+            result,
+            (plugin_root.parent / "managed-runtimes" / "0.1.0").resolve(),
         )
+        run.assert_not_called()
+
+
+class RuntimeLifecycleTests(unittest.TestCase):
+    def create_plugin_source(self, root: Path, version: str = CURRENT_VERSION) -> Path:
+        plugin_root = root / "plugin-cache" / version
+        plugin_root.mkdir(parents=True)
+        (plugin_root / "pyproject.toml").write_text(
+            f"[project]\nname = 'turnecho'\nversion = '{version}'\n",
+            encoding="utf-8",
+        )
+        return plugin_root
+
+    def fake_runtime_command(
+        self,
+        command: list[str],
+        *,
+        environment: dict[str, str] | None = None,
+    ) -> None:
+        if command[:2] != ["uv", "sync"]:
+            return
+        self.assertIsNotNone(environment)
+        environment_root = Path(environment["UV_PROJECT_ENVIRONMENT"])
+        bin_directory = environment_root / "bin"
+        bin_directory.mkdir(parents=True)
+        (bin_directory / "python").write_text("python", encoding="utf-8")
+        (bin_directory / "turnecho").write_text("turnecho", encoding="utf-8")
+
+    def test_runtime_survives_plugin_cache_replacement(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_source(root)
+            runtime_base = root / "user-data" / "runtimes"
+            with patch.object(
+                install_plugin,
+                "run_checked_command",
+                side_effect=self.fake_runtime_command,
+            ) as run:
+                state = install_plugin.prepare_installed_runtime(
+                    plugin_root,
+                    CURRENT_VERSION,
+                    runtime_base,
+                )
+                install_plugin.commit_runtime_install(state)
+
+            self.assertIn("--no-editable", run.call_args_list[0].args[0])
+            sync_environment = run.call_args_list[0].kwargs["environment"]
+            sync_environment_path = Path(sync_environment["UV_PROJECT_ENVIRONMENT"])
+            self.assertEqual(
+                sync_environment_path.parent.parent,
+                runtime_base.resolve(),
+            )
+            self.assertTrue(sync_environment_path.parent.name.startswith(".0.2.2."))
+            shutil.rmtree(plugin_root)
+            self.assertTrue(
+                (state.runtime_root / ".venv" / "bin" / "turnecho").is_file()
+            )
+
+    def test_same_version_repair_can_be_rolled_back(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_source(root)
+            runtime_base = root / "runtimes"
+            with patch.object(
+                install_plugin,
+                "run_checked_command",
+                side_effect=self.fake_runtime_command,
+            ):
+                first = install_plugin.prepare_installed_runtime(
+                    plugin_root,
+                    CURRENT_VERSION,
+                    runtime_base,
+                )
+                install_plugin.commit_runtime_install(first)
+                command = first.runtime_root / ".venv" / "bin" / "turnecho"
+                command.write_text("previous", encoding="utf-8")
+
+                replacement = install_plugin.prepare_installed_runtime(
+                    plugin_root,
+                    CURRENT_VERSION,
+                    runtime_base,
+                )
+                self.assertIsNotNone(replacement.backup_root)
+                install_plugin.rollback_runtime_install(replacement)
+
+            self.assertEqual(command.read_text(encoding="utf-8"), "previous")
+
+    def test_uninstall_removes_managed_runtime_and_command(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime_base = root / "runtimes"
+            runtime_root = runtime_base / CURRENT_VERSION
+            command = runtime_root / ".venv" / "bin" / "turnecho"
+            command.parent.mkdir(parents=True)
+            command.write_text("turnecho", encoding="utf-8")
+            (runtime_root / "pyproject.toml").write_text(
+                "[project]\nname = 'turnecho'\n",
+                encoding="utf-8",
+            )
+            (runtime_root / install_plugin.TURNECHO_RUNTIME_MARKER_FILE).write_text(
+                json.dumps({"name": "turnecho", "version": CURRENT_VERSION}),
+                encoding="utf-8",
+            )
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.symlink_to(command)
+            marketplace = {
+                "marketplaces": [
+                    {
+                        "name": "turnecho",
+                        "marketplaceSource": {
+                            "sourceType": "git",
+                            "source": "rmscoal/turnecho",
+                        },
+                    }
+                ]
+            }
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/codex"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        {"installed": [{"pluginId": "turnecho@turnecho"}]},
+                        marketplace,
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command") as run,
+            ):
+                command_removed, runtime_count = install_plugin.uninstall_plugin(
+                    command_path=command_path,
+                    runtime_base=runtime_base,
+                )
+
+            self.assertTrue(command_removed)
+            self.assertEqual(runtime_count, 1)
+            self.assertFalse(command_path.is_symlink())
+            self.assertFalse(runtime_root.exists())
+            self.assertEqual(
+                run.call_args_list,
+                [
+                    call(
+                        [
+                            "codex",
+                            "plugin",
+                            "remove",
+                            "turnecho@turnecho",
+                            "--json",
+                        ]
+                    ),
+                    call(
+                        [
+                            "codex",
+                            "plugin",
+                            "marketplace",
+                            "remove",
+                            "turnecho",
+                            "--json",
+                        ]
+                    ),
+                ],
+            )
+
+    def test_runtime_cleanup_leaves_unmarked_directories_unchanged(self) -> None:
+        with TemporaryDirectory() as directory:
+            runtime_base = Path(directory) / "runtimes"
+            unrelated = runtime_base / "custom"
+            unrelated.mkdir(parents=True)
+            probe = unrelated / "keep"
+            probe.write_text("unrelated", encoding="utf-8")
+
+            removed = install_plugin.remove_managed_runtimes(runtime_base)
+
+            self.assertEqual(removed, 0)
+            self.assertEqual(probe.read_text(encoding="utf-8"), "unrelated")
 
 
 if __name__ == "__main__":
