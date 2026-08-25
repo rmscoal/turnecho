@@ -138,7 +138,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "{}\n")
         self.assertNotEqual(result.stderr, "")
 
-    def test_shell_launcher_points_uv_at_the_stable_runtime(self) -> None:
+    def test_shell_launcher_runs_hook_with_the_stable_runtime(self) -> None:
         launcher = PROJECT_ROOT / "hooks" / "run_hook.sh"
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -155,32 +155,28 @@ class UserPromptSubmitHookTests(unittest.TestCase):
                 / "share"
                 / "turnecho"
                 / "runtimes"
-                / "0.2.2"
+                / "0.2.3"
                 / ".venv"
                 / "bin"
                 / "python"
             )
             runtime_python.parent.mkdir(parents=True)
-            runtime_python.write_text("python", encoding="utf-8")
-            runtime_python.chmod(0o755)
-
-            uv_log = root / "uv.log"
-            fake_uv = root / "bin" / "uv"
-            fake_uv.parent.mkdir()
-            fake_uv.write_text(
+            python_log = root / "python.log"
+            runtime_python.write_text(
                 "#!/bin/sh\n"
-                'printf \'%s\\n\' "$UV_PROJECT_ENVIRONMENT" "$@" > "$UV_LOG"\n'
+                'printf \'%s\\n\' "$@" > "$PYTHON_LOG"\n'
                 'printf \'{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit"}}\\n\'\n',
                 encoding="utf-8",
             )
-            fake_uv.chmod(0o755)
+            runtime_python.chmod(0o755)
+
             environment = os.environ.copy()
             environment.update(
                 {
                     "HOME": str(root / "home"),
-                    "PATH": f"{fake_uv.parent}{os.pathsep}{environment['PATH']}",
+                    "PATH": "/usr/bin:/bin",
                     "PLUGIN_ROOT": str(plugin_root),
-                    "UV_LOG": str(uv_log),
+                    "PYTHON_LOG": str(python_log),
                 }
             )
 
@@ -193,28 +189,13 @@ class UserPromptSubmitHookTests(unittest.TestCase):
                 text=True,
             )
 
-            invocation = uv_log.read_text(encoding="utf-8").splitlines()
+            invocation = python_log.read_text(encoding="utf-8").splitlines()
 
         self.assertEqual(
             json.loads(result.stdout)["hookSpecificOutput"]["hookEventName"],
             "UserPromptSubmit",
         )
-        self.assertEqual(invocation[0], str(runtime_python.parent.parent))
-        self.assertEqual(
-            invocation[1:],
-            [
-                "run",
-                "--preview-features",
-                "project-directory-must-exist",
-                "--project",
-                str(plugin_root),
-                "--no-dev",
-                "--no-sync",
-                "python",
-                "-m",
-                "turnecho.prompt_hook",
-            ],
-        )
+        self.assertEqual(invocation, ["-m", "turnecho.prompt_hook"])
 
     def test_shell_launcher_returns_empty_json_when_runtime_is_missing(self) -> None:
         launcher = PROJECT_ROOT / "hooks" / "run_hook.sh"

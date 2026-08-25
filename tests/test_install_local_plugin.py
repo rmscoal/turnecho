@@ -4,7 +4,10 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import call, patch
+from unittest.mock import patch
+
+from turnecho import install_plugin as github_installer
+from turnecho.constant import TURNECHO_PLUGIN_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
@@ -17,6 +20,26 @@ from update_plugin_cachebuster import update_plugin_cachebuster  # noqa: E402
 
 
 class LocalPluginInstallerTests(unittest.TestCase):
+    def prepare_runtime(
+        self,
+        plugin_root: Path,
+        version: str,
+        runtime_base: Path,
+    ) -> github_installer.RuntimeInstallState:
+        runtime_root = runtime_base / version
+        runtime_root.mkdir(parents=True)
+        (runtime_root / "pyproject.toml").write_bytes(
+            (plugin_root / "pyproject.toml").read_bytes()
+        )
+        (runtime_root / github_installer.TURNECHO_RUNTIME_MARKER_FILE).write_text(
+            json.dumps({"name": "turnecho", "version": version}),
+            encoding="utf-8",
+        )
+        command = runtime_root / ".venv" / "bin" / "turnecho"
+        command.parent.mkdir(parents=True)
+        command.write_text("#!/bin/sh\n", encoding="utf-8")
+        return github_installer.RuntimeInstallState(runtime_root, None)
+
     def create_plugin_root(self, directory: Path) -> Path:
         plugin_root = directory / "turnecho"
         manifest_directory = plugin_root / ".codex-plugin"
@@ -46,11 +69,16 @@ class LocalPluginInstallerTests(unittest.TestCase):
             plugin_root = self.create_plugin_root(root)
             plugin_link = root / "plugins" / "turnecho"
             marketplace_path = root / ".agents" / "plugins" / "marketplace.json"
+            runtime_base = root / "runtimes"
 
             with (
                 patch(
                     "install_local_plugin.shutil.which", return_value="/usr/bin/codex"
                 ),
+                patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ) as prepare_runtime,
                 patch("install_local_plugin.subprocess.run") as run,
             ):
                 install_plugin(
@@ -58,6 +86,7 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
                     command_path=root / "bin" / "turnecho",
+                    runtime_base=runtime_base,
                 )
 
             self.assertTrue(plugin_link.is_symlink())
@@ -66,7 +95,13 @@ class LocalPluginInstallerTests(unittest.TestCase):
             self.assertTrue(command_path.is_symlink())
             self.assertEqual(
                 command_path.resolve(),
-                (plugin_root / ".venv" / "bin" / "turnecho").resolve(),
+                (
+                    runtime_base
+                    / TURNECHO_PLUGIN_VERSION
+                    / ".venv"
+                    / "bin"
+                    / "turnecho"
+                ).resolve(),
             )
             marketplace = json.loads(marketplace_path.read_text(encoding="utf-8"))
             self.assertEqual(marketplace["name"], "personal")
@@ -75,38 +110,15 @@ class LocalPluginInstallerTests(unittest.TestCase):
                 marketplace["plugins"][0]["source"]["path"],
                 "./plugins/turnecho",
             )
-            run.assert_has_calls(
-                [
-                    call(
-                        [
-                            "uv",
-                            "sync",
-                            "--project",
-                            str(plugin_root.resolve()),
-                            "--no-dev",
-                        ],
-                        check=True,
-                    ),
-                    call(
-                        [
-                            "uv",
-                            "run",
-                            "--project",
-                            str(plugin_root.resolve()),
-                            "--no-dev",
-                            "python",
-                            "-m",
-                            "turnecho.runtime_preflight",
-                        ],
-                        check=True,
-                    ),
-                    call(
-                        ["codex", "plugin", "add", "turnecho@personal"],
-                        check=True,
-                    ),
-                ]
+            prepare_runtime.assert_called_once_with(
+                plugin_root.resolve(),
+                TURNECHO_PLUGIN_VERSION,
+                runtime_base.resolve(),
             )
-            self.assertEqual(run.call_count, 3)
+            run.assert_called_once_with(
+                ["codex", "plugin", "add", "turnecho@personal"],
+                check=True,
+            )
 
     def test_existing_directory_is_never_replaced(self) -> None:
         with TemporaryDirectory() as directory:
@@ -190,11 +202,12 @@ class LocalPluginInstallerTests(unittest.TestCase):
             plugin_root = self.create_plugin_root(root)
             plugin_link = root / "plugins" / "turnecho"
             marketplace_path = root / "marketplace.json"
+            runtime_base = root / "runtimes"
 
             with (
                 patch("install_local_plugin.shutil.which", return_value="/usr/bin/uv"),
                 patch(
-                    "install_local_plugin.subprocess.run",
+                    "install_local_plugin.prepare_installed_runtime",
                     side_effect=subprocess.CalledProcessError(1, ["uv", "sync"]),
                 ),
                 self.assertRaises(subprocess.CalledProcessError),
@@ -204,6 +217,7 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
                     command_path=root / "bin" / "turnecho",
+                    runtime_base=runtime_base,
                 )
 
             self.assertFalse(plugin_link.exists())
@@ -215,6 +229,7 @@ class LocalPluginInstallerTests(unittest.TestCase):
             plugin_root = self.create_plugin_root(root)
             plugin_link = root / "plugins" / "turnecho"
             marketplace_path = root / "marketplace.json"
+            runtime_base = root / "runtimes"
             original_marketplace = json.dumps(
                 {
                     "name": "personal",
@@ -230,12 +245,14 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     "install_local_plugin.shutil.which", return_value="/usr/bin/tool"
                 ),
                 patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ),
+                patch(
                     "install_local_plugin.subprocess.run",
-                    side_effect=[
-                        None,
-                        None,
-                        subprocess.CalledProcessError(1, ["codex", "plugin", "add"]),
-                    ],
+                    side_effect=subprocess.CalledProcessError(
+                        1, ["codex", "plugin", "add"]
+                    ),
                 ),
                 self.assertRaises(subprocess.CalledProcessError),
             ):
@@ -244,10 +261,12 @@ class LocalPluginInstallerTests(unittest.TestCase):
                     plugin_link=plugin_link,
                     marketplace_path=marketplace_path,
                     command_path=root / "bin" / "turnecho",
+                    runtime_base=runtime_base,
                 )
 
             self.assertFalse(plugin_link.exists())
             self.assertFalse((root / "bin" / "turnecho").exists())
+            self.assertFalse((runtime_base / TURNECHO_PLUGIN_VERSION).exists())
             self.assertEqual(marketplace_path.read_bytes(), original_marketplace)
 
     def test_update_uses_cachebuster_and_preserves_marketplace(self) -> None:

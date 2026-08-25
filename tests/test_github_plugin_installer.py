@@ -10,7 +10,7 @@ from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
 from turnecho.constant import TURNECHO_MARKETPLACE_MANIFEST_PATH
 
-CURRENT_VERSION = "0.2.2"
+CURRENT_VERSION = "0.2.3"
 CURRENT_REF = f"v{CURRENT_VERSION}"
 
 
@@ -961,17 +961,23 @@ class RuntimeLifecycleTests(unittest.TestCase):
         command: list[str],
         *,
         environment: dict[str, str] | None = None,
+        suppress_stdout: bool = False,
     ) -> None:
+        del suppress_stdout
         if command[:2] != ["uv", "sync"]:
             return
         self.assertIsNotNone(environment)
         environment_root = Path(environment["UV_PROJECT_ENVIRONMENT"])
         bin_directory = environment_root / "bin"
         bin_directory.mkdir(parents=True)
-        (bin_directory / "python").write_text("python", encoding="utf-8")
-        (bin_directory / "turnecho").write_text("turnecho", encoding="utf-8")
+        runtime_python = bin_directory / "python"
+        runtime_python.write_text("python", encoding="utf-8")
+        (bin_directory / "turnecho").write_text(
+            f"#!{runtime_python}\n",
+            encoding="utf-8",
+        )
 
-    def test_runtime_survives_plugin_cache_replacement(self) -> None:
+    def test_runtime_is_built_at_its_permanent_path(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
             plugin_root = self.create_plugin_source(root)
@@ -990,16 +996,35 @@ class RuntimeLifecycleTests(unittest.TestCase):
 
             self.assertIn("--no-editable", run.call_args_list[0].args[0])
             sync_environment = run.call_args_list[0].kwargs["environment"]
+            self.assertNotIn("VIRTUAL_ENV", sync_environment)
             sync_environment_path = Path(sync_environment["UV_PROJECT_ENVIRONMENT"])
             self.assertEqual(
-                sync_environment_path.parent.parent,
-                runtime_base.resolve(),
+                sync_environment_path,
+                runtime_base.resolve() / CURRENT_VERSION / ".venv",
             )
-            self.assertTrue(sync_environment_path.parent.name.startswith(".0.2.2."))
+            runtime_command = state.runtime_root / ".venv" / "bin" / "turnecho"
+            self.assertEqual(
+                runtime_command.read_text(encoding="utf-8").splitlines()[0],
+                f"#!{state.runtime_root / '.venv' / 'bin' / 'python'}",
+            )
+            self.assertEqual(
+                run.call_args_list[-2:],
+                [
+                    call(
+                        [
+                            str(state.runtime_root / ".venv" / "bin" / "python"),
+                            "-m",
+                            "turnecho.runtime_preflight",
+                        ]
+                    ),
+                    call(
+                        [str(runtime_command), "--version"],
+                        suppress_stdout=True,
+                    ),
+                ],
+            )
             shutil.rmtree(plugin_root)
-            self.assertTrue(
-                (state.runtime_root / ".venv" / "bin" / "turnecho").is_file()
-            )
+            self.assertTrue(runtime_command.is_file())
 
     def test_same_version_repair_can_be_rolled_back(self) -> None:
         with TemporaryDirectory() as directory:
@@ -1029,6 +1054,60 @@ class RuntimeLifecycleTests(unittest.TestCase):
                 install_plugin.rollback_runtime_install(replacement)
 
             self.assertEqual(command.read_text(encoding="utf-8"), "previous")
+
+    def test_failed_runtime_command_validation_restores_previous_runtime(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_source(root)
+            runtime_base = root / "runtimes"
+            with patch.object(
+                install_plugin,
+                "run_checked_command",
+                side_effect=self.fake_runtime_command,
+            ):
+                first = install_plugin.prepare_installed_runtime(
+                    plugin_root,
+                    CURRENT_VERSION,
+                    runtime_base,
+                )
+                install_plugin.commit_runtime_install(first)
+
+            command = first.runtime_root / ".venv" / "bin" / "turnecho"
+            command.write_text("previous", encoding="utf-8")
+
+            def fail_runtime_command(
+                candidate: list[str],
+                *,
+                environment: dict[str, str] | None = None,
+                suppress_stdout: bool = False,
+            ) -> None:
+                self.fake_runtime_command(
+                    candidate,
+                    environment=environment,
+                    suppress_stdout=suppress_stdout,
+                )
+                if candidate[-1:] == ["--version"]:
+                    raise subprocess.CalledProcessError(1, candidate)
+
+            with (
+                patch.object(
+                    install_plugin,
+                    "run_checked_command",
+                    side_effect=fail_runtime_command,
+                ),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                install_plugin.prepare_installed_runtime(
+                    plugin_root,
+                    CURRENT_VERSION,
+                    runtime_base,
+                )
+
+            self.assertEqual(command.read_text(encoding="utf-8"), "previous")
+            self.assertEqual(
+                [path.name for path in runtime_base.iterdir()],
+                [CURRENT_VERSION],
+            )
 
     def test_uninstall_removes_managed_runtime_and_command(self) -> None:
         with TemporaryDirectory() as directory:

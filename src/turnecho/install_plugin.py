@@ -47,7 +47,7 @@ def require_command(command_name: str) -> None:
 
 @dataclass(frozen=True)
 class RuntimeInstallState:
-    """Runtime paths needed to commit or roll back an atomic replacement."""
+    """Runtime paths needed to commit or roll back a replacement."""
 
     runtime_root: Path
     backup_root: Path | None
@@ -57,9 +57,15 @@ def run_checked_command(
     command: list[str],
     *,
     environment: dict[str, str] | None = None,
+    suppress_stdout: bool = False,
 ) -> None:
     """Run a command that does not need a parsed response."""
-    subprocess.run(command, check=True, env=environment)
+    subprocess.run(
+        command,
+        check=True,
+        env=environment,
+        stdout=subprocess.DEVNULL if suppress_stdout else None,
+    )
 
 
 def run_json_command(command: list[str]) -> dict[str, Any]:
@@ -341,25 +347,33 @@ def prepare_installed_runtime(
     version: str,
     runtime_base: Path,
 ) -> RuntimeInstallState:
-    """Build and atomically install a non-editable runtime outside Codex's cache."""
+    """Build a non-editable runtime at its permanent path with rollback."""
     runtime_base = runtime_base.expanduser().resolve()
     runtime_base.mkdir(parents=True, exist_ok=True)
     runtime_root = runtime_base / version
     if runtime_root.exists() and not is_managed_runtime_directory(runtime_root):
         raise InstallError(f"Refusing to replace an unmanaged runtime: {runtime_root}")
 
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=f".{version}.install-", dir=runtime_base)
-    )
+    # Virtual-environment launchers contain absolute interpreter paths. Preserve an
+    # existing runtime for rollback, then build its replacement at the final path.
     backup_root: Path | None = None
+    if runtime_root.exists():
+        backup_root = Path(
+            tempfile.mkdtemp(prefix=f".{version}.backup-", dir=runtime_base)
+        )
+        backup_root.rmdir()
+        os.replace(runtime_root, backup_root)
+
     try:
-        shutil.copy2(plugin_root / "pyproject.toml", staging_root / "pyproject.toml")
-        (staging_root / TURNECHO_RUNTIME_MARKER_FILE).write_text(
+        runtime_root.mkdir()
+        (runtime_root / TURNECHO_RUNTIME_MARKER_FILE).write_text(
             json.dumps({"name": TURNECHO_PLUGIN_NAME, "version": version}) + "\n",
             encoding="utf-8",
         )
+        shutil.copy2(plugin_root / "pyproject.toml", runtime_root / "pyproject.toml")
         environment = os.environ.copy()
-        environment["UV_PROJECT_ENVIRONMENT"] = str(staging_root / ".venv")
+        environment.pop("VIRTUAL_ENV", None)
+        environment["UV_PROJECT_ENVIRONMENT"] = str(runtime_root / ".venv")
         run_checked_command(
             [
                 "uv",
@@ -371,27 +385,21 @@ def prepare_installed_runtime(
             ],
             environment=environment,
         )
-        runtime_python = staging_root / ".venv" / "bin" / "python"
-        runtime_command = staging_root / ".venv" / "bin" / "turnecho"
+        runtime_python = runtime_root / ".venv" / "bin" / "python"
+        runtime_command = runtime_root / ".venv" / "bin" / "turnecho"
         if not runtime_python.is_file() or not runtime_command.is_file():
             raise InstallError(
-                f"TurnEcho runtime commands were not created under {staging_root}"
+                f"TurnEcho runtime commands were not created under {runtime_root}"
             )
         run_checked_command([str(runtime_python), "-m", "turnecho.runtime_preflight"])
-
-        if runtime_root.exists():
-            backup_root = Path(
-                tempfile.mkdtemp(prefix=f".{version}.backup-", dir=runtime_base)
-            )
-            backup_root.rmdir()
-            os.replace(runtime_root, backup_root)
-        os.replace(staging_root, runtime_root)
+        run_checked_command(
+            [str(runtime_command), "--version"],
+            suppress_stdout=True,
+        )
     except Exception:
-        if staging_root.exists():
-            shutil.rmtree(staging_root)
+        if runtime_root.exists():
+            shutil.rmtree(runtime_root)
         if backup_root is not None and backup_root.exists():
-            if runtime_root.exists():
-                _remove_managed_runtime(runtime_root)
             os.replace(backup_root, runtime_root)
         raise
 

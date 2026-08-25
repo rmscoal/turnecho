@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.3 - 2026-08-25
+
+- Build managed virtual environments at their permanent versioned path so
+  generated command launchers never retain a deleted installation path.
+- Execute the final managed `turnecho` command before reporting installation
+  success, and restore the previous same-version runtime if validation fails.
+- Use the same permanent runtime for GitHub and local-checkout installations.
+  Hook launchers now execute that runtime's Python directly without invoking
+  `uv` on every Codex hook.
+
 ## 0.2.2 - 2026-08-25
 
 - Store versioned, non-editable Python runtimes outside the Codex-managed

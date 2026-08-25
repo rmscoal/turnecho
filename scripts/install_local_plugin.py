@@ -24,6 +24,14 @@ from turnecho.cli import (
     install_cli_command,
     restore_cli_command,
 )
+from turnecho.constant import TURNECHO_PLUGIN_VERSION
+from turnecho.install_plugin import (
+    RuntimeInstallState,
+    commit_runtime_install,
+    prepare_installed_runtime,
+    resolve_runtime_base_directory,
+    rollback_runtime_install,
+)
 
 DEFAULT_MARKETPLACE_PATH = Path.home() / ".agents" / "plugins" / "marketplace.json"
 DEFAULT_PLUGIN_PARENT = Path.home() / "plugins"
@@ -184,32 +192,6 @@ def ensure_plugin_link(link_path: Path, plugin_root: Path, *, force: bool) -> bo
     return True
 
 
-def sync_plugin_dependencies(plugin_root: Path) -> None:
-    """Install and validate the audio runtime before changing Codex state."""
-    if shutil.which("uv") is None:
-        raise InstallError(
-            "The 'uv' command was not found. Install uv before installing TurnEcho."
-        )
-
-    subprocess.run(
-        ["uv", "sync", "--project", str(plugin_root), "--no-dev"],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "uv",
-            "run",
-            "--project",
-            str(plugin_root),
-            "--no-dev",
-            "python",
-            "-m",
-            "turnecho.runtime_preflight",
-        ],
-        check=True,
-    )
-
-
 def write_json_atomically(path: Path, payload: dict[str, Any]) -> None:
     """Write marketplace JSON without leaving a partially-written file."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,6 +295,7 @@ def install_plugin(
     sync_dependencies: bool = True,
     update: bool = False,
     command_path: Path = DEFAULT_COMMAND_PATH,
+    runtime_base: Path | None = None,
 ) -> tuple[str, str]:
     """Install or update a checkout in the personal marketplace and Codex."""
     plugin_root = plugin_root.expanduser().resolve()
@@ -321,6 +304,11 @@ def install_plugin(
     marketplace_path = marketplace_path.expanduser().resolve()
     plugin_link = plugin_link or DEFAULT_PLUGIN_PARENT / plugin_name
     plugin_link = plugin_link.expanduser()
+    runtime_base = (
+        resolve_runtime_base_directory()
+        if runtime_base is None
+        else runtime_base.expanduser().resolve()
+    )
 
     marketplace, marketplace_name = load_or_create_marketplace(marketplace_path)
     marketplace_changed = prepare_marketplace_entry(
@@ -342,8 +330,10 @@ def install_plugin(
         if marketplace_changed:
             print(f"Would update marketplace: {marketplace_path}")
         if sync_dependencies:
-            print(f"Would run: uv sync --project {plugin_root} --no-dev")
-            print(f"Would verify the audio runtime in: {plugin_root}")
+            print(
+                "Would prepare and verify the TurnEcho runtime at: "
+                f"{runtime_base / TURNECHO_PLUGIN_VERSION}"
+            )
             print(f"Would install the TurnEcho command at: {command_path}")
         if update:
             print(f"Would run: update_plugin_cachebuster.py {plugin_root}")
@@ -366,14 +356,23 @@ def install_plugin(
     )
     manifest_may_change = update
     command_link_state: CommandLinkState | None = None
+    runtime_state: RuntimeInstallState | None = None
 
     try:
         if update:
             update_plugin_cachebuster(plugin_root)
 
         if sync_dependencies:
-            sync_plugin_dependencies(plugin_root)
-            command_link_state = install_cli_command(plugin_root, command_path)
+            runtime_state = prepare_installed_runtime(
+                plugin_root,
+                TURNECHO_PLUGIN_VERSION,
+                runtime_base,
+            )
+            command_link_state = install_cli_command(
+                runtime_state.runtime_root,
+                command_path,
+                managed_cache_root=runtime_base,
+            )
 
         ensure_plugin_link(plugin_link, plugin_root, force=force)
         if marketplace_changed:
@@ -389,6 +388,12 @@ def install_plugin(
                 restore_cli_command(command_link_state)
             except Exception as rollback_error:
                 rollback_errors.append(f"command link: {rollback_error}")
+
+        if runtime_state is not None:
+            try:
+                rollback_runtime_install(runtime_state)
+            except Exception as rollback_error:
+                rollback_errors.append(f"runtime: {rollback_error}")
 
         if link_may_change:
             try:
@@ -414,6 +419,9 @@ def install_plugin(
                 + "; ".join(rollback_errors)
             ) from error
         raise
+
+    if runtime_state is not None:
+        commit_runtime_install(runtime_state)
 
     print(f"TurnEcho source linked at {plugin_link}")
     print(f"Marketplace ready at {marketplace_path}")

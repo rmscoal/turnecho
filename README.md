@@ -113,7 +113,7 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
@@ -123,7 +123,8 @@ plugin and the `turnecho` command.
 The installer keeps Codex-managed plugin source separate from the generated
 Python environment. The versioned runtime is stored under
 `~/.local/share/turnecho/runtimes/`. Codex can refresh its plugin cache without
-deleting TurnEcho's dependencies or command target.
+deleting TurnEcho's dependencies or command target. Hooks execute this runtime
+directly. `uv` is needed during installation and updates, not for each hook.
 
 Do not replace this command with `codex plugin add`. Codex installs the plugin
 source into its cache, but it does not run TurnEcho's dependency preparation or
@@ -142,7 +143,8 @@ uv run --no-dev python scripts/install_local_plugin.py
 ```
 
 Use `--dry-run` to preview the installation or `--skip-codex` to prepare it
-without adding the plugin to Codex.
+without adding the plugin to Codex. Local and GitHub installations use the same
+versioned runtime layout and managed `turnecho` command.
 
 ### Manage the installation
 
@@ -151,7 +153,7 @@ without adding the plugin to Codex.
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install --update
 ```
 
 The update installer replaces the pinned marketplace release, reinstalls the
@@ -175,11 +177,13 @@ If the current plugin version is still installed but its runtime or
 `turnecho` command is missing, rerun the normal installer without `--update`:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install
 ```
 
-This atomically prepares the existing release runtime again and repairs its
-managed command link without replacing the marketplace release.
+This rebuilds the existing release runtime at its permanent path, verifies the
+installed `turnecho` command, and repairs its managed command link without
+replacing the marketplace release. If validation fails, the installer restores
+the previous runtime.
 
 #### Update a local checkout
 
@@ -194,7 +198,7 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 Remove a GitHub installation with the TurnEcho uninstaller:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.2 turnecho-install --uninstall
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install --uninstall
 ```
 
 This removes the GitHub plugin, its marketplace entry, all marked versioned
@@ -213,8 +217,8 @@ Remove a local-checkout installation with:
 codex plugin remove turnecho@personal
 ```
 
-The local-checkout installer creates a command link into the checkout. Remove
-it after uninstalling the local plugin:
+The local-checkout installer creates a command link into the managed versioned
+runtime. Remove it after uninstalling the local plugin:
 
 ```sh
 rm ~/.local/bin/turnecho
