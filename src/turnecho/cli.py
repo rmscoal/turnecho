@@ -70,9 +70,28 @@ def _is_turnecho_environment_command(target: Path) -> bool:
     return isinstance(project, dict) and project.get("name") == "turnecho"
 
 
+def _is_missing_managed_cache_command(target: Path, cache_root: Path) -> bool:
+    """Recognize a missing versioned command under TurnEcho's Codex cache."""
+    if target.exists():
+        return False
+
+    try:
+        relative_target = target.relative_to(cache_root.expanduser().resolve())
+    except ValueError:
+        return False
+
+    return (
+        len(relative_target.parts) == 4
+        and relative_target.parts[0] not in {"", ".", ".."}
+        and relative_target.parts[1:] == (".venv", "bin", "turnecho")
+    )
+
+
 def install_cli_command(
     plugin_root: Path,
     command_path: Path = DEFAULT_COMMAND_PATH,
+    *,
+    managed_cache_root: Path | None = None,
 ) -> CommandLinkState:
     """Atomically point the user command at the installed plugin runtime."""
     plugin_root = plugin_root.expanduser().resolve()
@@ -91,7 +110,17 @@ def install_cli_command(
         current_target = (command_path.parent / original_target).resolve()
         if current_target == source.resolve():
             return CommandLinkState(command_path, original_target, source, False)
-        if not _is_turnecho_environment_command(current_target):
+        is_missing_managed_command = (
+            managed_cache_root is not None
+            and _is_missing_managed_cache_command(
+                current_target,
+                managed_cache_root,
+            )
+        )
+        if (
+            not _is_turnecho_environment_command(current_target)
+            and not is_missing_managed_command
+        ):
             raise CommandInstallError(
                 f"Refusing to replace an unmanaged command link: {command_path}"
             )

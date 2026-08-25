@@ -113,12 +113,17 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.0 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
 of the product. It checks the model and audio output before installing the
 plugin and the `turnecho` command.
+
+Do not replace this command with `codex plugin add`. Codex installs the plugin
+source into its cache, but it does not run TurnEcho's dependency preparation or
+create the `turnecho` command. Direct Codex installation is only an internal
+step used by the TurnEcho installer.
 
 After installation, start a new Codex thread. If the installer reports that
 `~/.local/bin` is not on `PATH`, add it before running `turnecho`.
@@ -141,8 +146,30 @@ without adding the plugin to Codex.
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.0 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install --update
 ```
+
+The update installer replaces the pinned marketplace release, reinstalls the
+plugin, prepares the new cached runtime, and updates the managed command link.
+If an update fails, it attempts to restore and verify the previous plugin
+runtime before returning the original error. If rollback also fails, the
+installer reports both failures.
+
+Do not update TurnEcho by running `codex plugin remove` followed by
+`codex plugin add`. That recreates the Codex plugin source without preparing
+TurnEcho's runtime or command.
+
+#### Repair a GitHub installation
+
+If the current plugin version is still installed but its runtime or
+`turnecho` command is missing, rerun the normal installer without `--update`:
+
+```sh
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.1 turnecho-install
+```
+
+This prepares the existing cached release again and repairs its managed command
+link without replacing the marketplace release.
 
 #### Update a local checkout
 
@@ -159,6 +186,12 @@ Remove a GitHub installation with:
 ```sh
 codex plugin remove turnecho@turnecho
 ```
+
+The plugin source and Python runtime are both stored in Codex's plugin cache,
+so this command removes both. It does not remove the managed link outside that
+cache. Until that link is removed, it remains as a dangling managed symlink.
+The TurnEcho installer can recognize and safely replace that link during a
+later installation.
 
 To also remove the configured TurnEcho marketplace, run:
 
@@ -181,9 +214,10 @@ rm ~/.local/bin/turnecho
 
 Only run this command when that path is still the TurnEcho-managed symlink.
 
-Removing the plugin does not delete TurnEcho's runtime data. The configuration,
-queue, worker log, and stored summaries remain under `~/.config/turnecho/`. To
-remove this data too, first back up anything you need, then run:
+Removing the plugin does not delete TurnEcho's local user data. The
+configuration, queue, worker log, and stored summaries remain under
+`~/.config/turnecho/`. To remove this data too, first back up anything you need,
+then run:
 
 ```sh
 rm -rf ~/.config/turnecho

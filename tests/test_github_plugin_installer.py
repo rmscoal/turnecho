@@ -6,17 +6,24 @@ from unittest.mock import call, patch
 
 from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
+from turnecho.constant import TURNECHO_MARKETPLACE_MANIFEST_PATH
 
-CURRENT_VERSION = "0.2.0"
+CURRENT_VERSION = "0.2.1"
 CURRENT_REF = f"v{CURRENT_VERSION}"
 
 
 class GitHubPluginInstallerTests(unittest.TestCase):
-    def create_installed_plugin(self, directory: Path) -> Path:
-        plugin_root = directory / "installed-turnecho"
+    def create_installed_plugin(
+        self,
+        directory: Path,
+        *,
+        name: str = "installed-turnecho",
+        version: str = CURRENT_VERSION,
+    ) -> Path:
+        plugin_root = directory / name
         plugin_root.mkdir()
         (plugin_root / "pyproject.toml").write_text(
-            f"[project]\nname = 'turnecho'\nversion = '{CURRENT_VERSION}'\n",
+            f"[project]\nname = 'turnecho'\nversion = '{version}'\n",
             encoding="utf-8",
         )
         command = plugin_root / ".venv" / "bin" / "turnecho"
@@ -45,12 +52,17 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             ]
         }
 
-    def installed_result(self, plugin_root: Path) -> dict[str, object]:
+    def installed_result(
+        self,
+        plugin_root: Path,
+        *,
+        version: str = CURRENT_VERSION,
+    ) -> dict[str, object]:
         return {
             "pluginId": "turnecho@turnecho",
             "name": "turnecho",
             "marketplaceName": "turnecho",
-            "version": CURRENT_VERSION,
+            "version": version,
             "installedPath": str(plugin_root),
             "authPolicy": "ON_INSTALL",
         }
@@ -125,6 +137,41 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             ],
         )
 
+    def test_fresh_install_repairs_a_dangling_managed_command(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache_root = root / "cache" / "turnecho"
+            cache_root.mkdir(parents=True)
+            plugin_root = self.create_installed_plugin(
+                cache_root,
+                name=CURRENT_VERSION,
+            )
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.symlink_to(cache_root / "0.2.0" / ".venv" / "bin" / "turnecho")
+
+            with (
+                patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
+                patch.object(install_plugin, "validate_runtime_dependencies"),
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        {"marketplaces": []},
+                        {"installed": []},
+                        self.installed_result(plugin_root),
+                        self.installed_payload(plugin_root),
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command"),
+            ):
+                install_plugin.install_plugin(command_path=command_path)
+
+            self.assertEqual(
+                command_path.resolve(),
+                (plugin_root / ".venv" / "bin" / "turnecho").resolve(),
+            )
+
     def test_runtime_preflight_failure_does_not_change_codex(self) -> None:
         with (
             patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
@@ -139,6 +186,33 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             install_plugin.install_plugin()
 
         run_json.assert_not_called()
+
+    def test_runtime_restore_rejects_an_unexpected_previous_ref(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_installed_plugin(root)
+
+            with (
+                patch.object(
+                    install_plugin,
+                    "run_json_command",
+                    side_effect=[
+                        self.installed_result(plugin_root),
+                        self.installed_payload(plugin_root),
+                    ],
+                ),
+                patch.object(install_plugin, "run_checked_command") as run,
+                self.assertRaisesRegex(
+                    install_plugin.InstallError,
+                    "unexpected TurnEcho release",
+                ),
+            ):
+                install_plugin.restore_plugin_runtime(
+                    "v0.1.0",
+                    root / "bin" / "turnecho",
+                )
+
+        run.assert_not_called()
 
     def test_missing_install_path_rolls_back_fresh_codex_state(self) -> None:
         with (
@@ -430,8 +504,10 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         previous_payload,
                         self.installed_result(plugin_root),
                         previous_payload,
+                        self.installed_result(plugin_root, version="0.1.0"),
+                        previous_payload,
                     ],
-                ),
+                ) as run_json,
                 patch.object(install_plugin, "run_checked_command") as run,
                 self.assertRaisesRegex(
                     install_plugin.InstallError,
@@ -443,11 +519,12 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     command_path=Path(directory) / "bin" / "turnecho",
                 )
 
-        self.assertFalse(
-            any(command.args[0][0] == "uv" for command in run.call_args_list)
+        self.assertEqual(
+            run_json.call_args_list[-2],
+            call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
         )
         self.assertEqual(
-            run.call_args_list[-3:],
+            run.call_args_list[-4:],
             [
                 call(
                     [
@@ -473,11 +550,23 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ),
                 call(
                     [
-                        "codex",
-                        "plugin",
-                        "add",
-                        "turnecho@turnecho",
-                        "--json",
+                        "uv",
+                        "sync",
+                        "--project",
+                        str(plugin_root.resolve()),
+                        "--no-dev",
+                    ]
+                ),
+                call(
+                    [
+                        "uv",
+                        "run",
+                        "--project",
+                        str(plugin_root.resolve()),
+                        "--no-dev",
+                        "python",
+                        "-m",
+                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
@@ -485,10 +574,17 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
     def test_failed_update_restores_previous_marketplace_and_plugin(self) -> None:
         with TemporaryDirectory() as directory:
-            plugin_root = self.create_installed_plugin(Path(directory))
+            root = Path(directory)
+            plugin_root = self.create_installed_plugin(root, name="current")
+            previous_root = self.create_installed_plugin(
+                root,
+                name="previous",
+                version="0.1.0",
+            )
+            command_path = root / "bin" / "turnecho"
             previous_ref = "v0.1.0"
             previous_payload = self.installed_payload(
-                plugin_root,
+                previous_root,
                 version="0.1.0",
                 ref=previous_ref,
             )
@@ -527,8 +623,10 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         previous_payload,
                         self.installed_result(plugin_root),
                         installed_payload,
+                        self.installed_result(previous_root, version="0.1.0"),
+                        previous_payload,
                     ],
-                ),
+                ) as run_json,
                 patch.object(
                     install_plugin,
                     "run_checked_command",
@@ -538,11 +636,20 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             ):
                 install_plugin.install_plugin(
                     update=True,
-                    command_path=Path(directory) / "bin" / "turnecho",
+                    command_path=command_path,
                 )
 
+            self.assertEqual(
+                command_path.resolve(),
+                (previous_root / ".venv" / "bin" / "turnecho").resolve(),
+            )
+
         self.assertEqual(
-            run_command.call_args_list[-3:],
+            run_json.call_args_list[-2],
+            call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
+        )
+        self.assertEqual(
+            run_command.call_args_list[-4:],
             [
                 call(
                     [
@@ -568,11 +675,23 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ),
                 call(
                     [
-                        "codex",
-                        "plugin",
-                        "add",
-                        "turnecho@turnecho",
-                        "--json",
+                        "uv",
+                        "sync",
+                        "--project",
+                        str(previous_root.resolve()),
+                        "--no-dev",
+                    ]
+                ),
+                call(
+                    [
+                        "uv",
+                        "run",
+                        "--project",
+                        str(previous_root.resolve()),
+                        "--no-dev",
+                        "python",
+                        "-m",
+                        "turnecho.runtime_preflight",
                     ]
                 ),
             ],
@@ -653,10 +772,17 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
     def test_failed_update_restores_plugin_when_marketplace_was_missing(self) -> None:
         with TemporaryDirectory() as directory:
-            plugin_root = self.create_installed_plugin(Path(directory))
+            root = Path(directory)
+            plugin_root = self.create_installed_plugin(root, name="current")
+            previous_root = self.create_installed_plugin(
+                root,
+                name="previous",
+                version="0.1.0",
+            )
+            command_path = root / "bin" / "turnecho"
             previous_ref = "v0.1.0"
             previous_payload = self.installed_payload(
-                plugin_root,
+                previous_root,
                 version="0.1.0",
                 ref=previous_ref,
             )
@@ -684,8 +810,10 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                         previous_payload,
                         self.installed_result(plugin_root),
                         installed_payload,
+                        self.installed_result(previous_root, version="0.1.0"),
+                        previous_payload,
                     ],
-                ),
+                ) as run_json,
                 patch.object(
                     install_plugin,
                     "run_checked_command",
@@ -695,11 +823,20 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             ):
                 install_plugin.install_plugin(
                     update=True,
-                    command_path=Path(directory) / "bin" / "turnecho",
+                    command_path=command_path,
                 )
 
+            self.assertEqual(
+                command_path.resolve(),
+                (previous_root / ".venv" / "bin" / "turnecho").resolve(),
+            )
+
         self.assertEqual(
-            run_command.call_args_list[-4:],
+            run_json.call_args_list[-2],
+            call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
+        )
+        self.assertEqual(
+            run_command.call_args_list[-5:],
             [
                 call(
                     [
@@ -725,11 +862,23 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                 ),
                 call(
                     [
-                        "codex",
-                        "plugin",
-                        "add",
-                        "turnecho@turnecho",
-                        "--json",
+                        "uv",
+                        "sync",
+                        "--project",
+                        str(previous_root.resolve()),
+                        "--no-dev",
+                    ]
+                ),
+                call(
+                    [
+                        "uv",
+                        "run",
+                        "--project",
+                        str(previous_root.resolve()),
+                        "--no-dev",
+                        "python",
+                        "-m",
+                        "turnecho.runtime_preflight",
                     ]
                 ),
                 call(
@@ -750,7 +899,7 @@ class GitHubPluginInstallerTests(unittest.TestCase):
     ) -> None:
         with TemporaryDirectory() as directory:
             marketplace_root = Path(directory)
-            manifest_path = marketplace_root / install_plugin.MARKETPLACE_MANIFEST_PATH
+            manifest_path = marketplace_root / TURNECHO_MARKETPLACE_MANIFEST_PATH
             manifest_path.parent.mkdir(parents=True)
             manifest_path.write_text(
                 """{

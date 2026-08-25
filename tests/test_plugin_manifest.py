@@ -3,7 +3,7 @@ import tomllib
 import unittest
 from pathlib import Path
 
-from turnecho import install_plugin
+from turnecho.constant import TURNECHO_MARKETPLACE_REF, TURNECHO_PLUGIN_VERSION
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,8 +39,8 @@ class PluginManifestTests(unittest.TestCase):
         marketplace_ref = marketplace["plugins"][0]["source"]["ref"]
         self.assertEqual(manifest["version"], version)
         self.assertEqual(marketplace_ref, f"v{version}")
-        self.assertEqual(install_plugin.PLUGIN_VERSION, version)
-        self.assertEqual(install_plugin.MARKETPLACE_REF, marketplace_ref)
+        self.assertEqual(TURNECHO_PLUGIN_VERSION, version)
+        self.assertEqual(TURNECHO_MARKETPLACE_REF, marketplace_ref)
 
 
 if __name__ == "__main__":

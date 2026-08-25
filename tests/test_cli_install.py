@@ -67,6 +67,46 @@ class CliInstallTests(unittest.TestCase):
 
             self.assertEqual(os.readlink(command_path), str(unrelated))
 
+    def test_dangling_managed_cache_link_is_replaced(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache_root = root / "cache" / "turnecho"
+            cache_root.mkdir(parents=True)
+            plugin_root, command = self.create_plugin(cache_root, "0.2.1")
+            previous_command = cache_root / "0.2.0" / ".venv" / "bin" / "turnecho"
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.symlink_to(previous_command)
+
+            state = install_cli_command(
+                plugin_root,
+                command_path,
+                managed_cache_root=cache_root,
+            )
+
+            self.assertTrue(state.changed)
+            self.assertEqual(command_path.resolve(), command.resolve())
+
+    def test_unmanaged_dangling_symlink_is_not_replaced(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            cache_root = root / "cache" / "turnecho"
+            cache_root.mkdir(parents=True)
+            plugin_root, _ = self.create_plugin(cache_root, "0.2.1")
+            unrelated = root / "unrelated" / ".venv" / "bin" / "turnecho"
+            command_path = root / "bin" / "turnecho"
+            command_path.parent.mkdir()
+            command_path.symlink_to(unrelated)
+
+            with self.assertRaises(CommandInstallError):
+                install_cli_command(
+                    plugin_root,
+                    command_path,
+                    managed_cache_root=cache_root,
+                )
+
+            self.assertEqual(os.readlink(command_path), str(unrelated))
+
     def test_restore_does_not_remove_a_command_changed_after_install(self) -> None:
         with TemporaryDirectory() as directory:
             root = Path(directory)
