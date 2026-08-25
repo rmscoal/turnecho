@@ -35,7 +35,7 @@ class HookTests(unittest.TestCase):
         self.assertTrue(options["start_new_session"])
         self.assertTrue(options["close_fds"])
 
-    def test_plugin_worker_uses_project_runtime_without_dev_dependencies(self) -> None:
+    def test_plugin_worker_uses_the_current_stable_runtime(self) -> None:
         with TemporaryDirectory() as directory:
             log_path = str(Path(directory) / "worker.log")
             with (
@@ -48,19 +48,7 @@ class HookTests(unittest.TestCase):
                 stop_hook.spawn_background_worker()
 
         command = popen.call_args.args[0]
-        self.assertEqual(
-            command,
-            [
-                "uv",
-                "run",
-                "--project",
-                "/cached/turnecho",
-                "--no-dev",
-                "python",
-                "-m",
-                "turnecho.worker",
-            ],
-        )
+        self.assertEqual(command, [sys.executable, "-m", "turnecho.worker"])
 
     def run_hook(
         self,
@@ -196,7 +184,7 @@ class HookTests(unittest.TestCase):
         self.assertEqual(stdout, "{}\n")
         self.assertEqual(stderr, "")
 
-    def test_registered_stop_hook_uses_uv_without_syncing_dependencies(self) -> None:
+    def test_registered_stop_hook_uses_the_shared_shell_launcher(self) -> None:
         hooks = json.loads(
             (Path(__file__).resolve().parents[1] / "hooks" / "hooks.json").read_text(
                 encoding="utf-8"
@@ -206,10 +194,8 @@ class HookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            'PYTHONPATH="$PLUGIN_ROOT/src" uv run --project "$PLUGIN_ROOT" '
-            "--no-dev --no-sync python -m turnecho.stop_hook",
+            "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" stop || printf '{}\\n'",
         )
-        self.assertIn("--no-sync", command)
 
     def test_stop_hook_starts_without_site_packages(self) -> None:
         project_root = Path(__file__).resolve().parents[1]

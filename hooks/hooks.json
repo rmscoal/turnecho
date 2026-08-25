@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONPATH=\"$PLUGIN_ROOT/src\" uv run --project \"$PLUGIN_ROOT\" --no-dev --no-sync python -m turnecho.prompt_hook",
+            "command": "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" prompt || printf '{}\\n'",
             "timeout": 3
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "PYTHONPATH=\"$PLUGIN_ROOT/src\" uv run --project \"$PLUGIN_ROOT\" --no-dev --no-sync python -m turnecho.stop_hook",
+            "command": "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" stop || printf '{}\\n'",
             "statusMessage": "Talking back to you",
             "timeout": 10
           }

@@ -103,7 +103,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "{}\n")
         self.assertIn("Cannot read TurnEcho configuration", result.stderr)
 
-    def test_registered_prompt_hook_uses_uv_without_syncing_dependencies(self) -> None:
+    def test_registered_prompt_hook_uses_the_shared_shell_launcher(self) -> None:
         hooks = json.loads(
             (PROJECT_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
         )
@@ -111,10 +111,140 @@ class UserPromptSubmitHookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            'PYTHONPATH="$PLUGIN_ROOT/src" uv run --project "$PLUGIN_ROOT" '
-            "--no-dev --no-sync python -m turnecho.prompt_hook",
+            "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" prompt || printf '{}\\n'",
         )
-        self.assertIn("--no-sync", command)
+
+    def test_registered_prompt_hook_fails_safe_when_plugin_root_is_missing(
+        self,
+    ) -> None:
+        hooks = json.loads(
+            (PROJECT_ROOT / "hooks" / "hooks.json").read_text(encoding="utf-8")
+        )
+        command = hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+
+        with TemporaryDirectory() as directory:
+            environment = os.environ.copy()
+            environment["PLUGIN_ROOT"] = str(Path(directory) / "removed-plugin")
+            result = subprocess.run(
+                ["sh", "-c", command],
+                input=json.dumps({"hook_event_name": "UserPromptSubmit"}),
+                capture_output=True,
+                check=True,
+                cwd=PROJECT_ROOT,
+                env=environment,
+                text=True,
+            )
+
+        self.assertEqual(result.stdout, "{}\n")
+        self.assertNotEqual(result.stderr, "")
+
+    def test_shell_launcher_points_uv_at_the_stable_runtime(self) -> None:
+        launcher = PROJECT_ROOT / "hooks" / "run_hook.sh"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = root / "plugin"
+            plugin_root.mkdir()
+            (plugin_root / "pyproject.toml").write_text(
+                "[project]\nname = 'turnecho'\n",
+                encoding="utf-8",
+            )
+            runtime_python = (
+                root
+                / "home"
+                / ".local"
+                / "share"
+                / "turnecho"
+                / "runtimes"
+                / "0.2.2"
+                / ".venv"
+                / "bin"
+                / "python"
+            )
+            runtime_python.parent.mkdir(parents=True)
+            runtime_python.write_text("python", encoding="utf-8")
+            runtime_python.chmod(0o755)
+
+            uv_log = root / "uv.log"
+            fake_uv = root / "bin" / "uv"
+            fake_uv.parent.mkdir()
+            fake_uv.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s\\n\' "$UV_PROJECT_ENVIRONMENT" "$@" > "$UV_LOG"\n'
+                'printf \'{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit"}}\\n\'\n',
+                encoding="utf-8",
+            )
+            fake_uv.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(root / "home"),
+                    "PATH": f"{fake_uv.parent}{os.pathsep}{environment['PATH']}",
+                    "PLUGIN_ROOT": str(plugin_root),
+                    "UV_LOG": str(uv_log),
+                }
+            )
+
+            result = subprocess.run(
+                ["sh", str(launcher), "prompt"],
+                input="{}",
+                capture_output=True,
+                check=True,
+                env=environment,
+                text=True,
+            )
+
+            invocation = uv_log.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(
+            json.loads(result.stdout)["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit",
+        )
+        self.assertEqual(invocation[0], str(runtime_python.parent.parent))
+        self.assertEqual(
+            invocation[1:],
+            [
+                "run",
+                "--preview-features",
+                "project-directory-must-exist",
+                "--project",
+                str(plugin_root),
+                "--no-dev",
+                "--no-sync",
+                "python",
+                "-m",
+                "turnecho.prompt_hook",
+            ],
+        )
+
+    def test_shell_launcher_returns_empty_json_when_runtime_is_missing(self) -> None:
+        launcher = PROJECT_ROOT / "hooks" / "run_hook.sh"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = root / "plugin"
+            plugin_root.mkdir()
+            (plugin_root / "pyproject.toml").write_text(
+                "[project]\nname = 'turnecho'\n",
+                encoding="utf-8",
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "HOME": str(root / "home"),
+                    "PLUGIN_ROOT": str(plugin_root),
+                }
+            )
+
+            result = subprocess.run(
+                ["sh", str(launcher), "prompt"],
+                input="{}",
+                capture_output=True,
+                check=True,
+                env=environment,
+                text=True,
+            )
+
+        self.assertEqual(result.stdout, "{}\n")
+        self.assertEqual(result.stderr, "")
 
 
 if __name__ == "__main__":
