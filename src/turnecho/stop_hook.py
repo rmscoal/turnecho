@@ -1,7 +1,5 @@
 import json
-import subprocess
 import sys
-from pathlib import Path
 
 from .config import ConfigError, load_config
 from .constant import (
@@ -10,26 +8,9 @@ from .constant import (
     TURNECHO_SUMMARY_CLOSE_MARKER,
     TURNECHO_SUMMARY_MAX_CHARS,
     TURNECHO_SUMMARY_OPEN_MARKER,
-    TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX,
 )
 from .sqlite import insert_job_db
-
-
-def spawn_background_worker() -> None:
-    log_path = Path(TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX).expanduser()
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-
-    worker_command = [sys.executable, "-m", "turnecho.worker"]
-
-    with log_path.open("ab") as log_file:
-        subprocess.Popen(
-            worker_command,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            close_fds=True,
-        )
+from .worker import spawn_background_worker
 
 
 def extract_turnecho_summary_from_agent_message(agent_message: str) -> str | None:
@@ -110,6 +91,7 @@ def handle_stop_hook(raw_input: object) -> None:
         print(e, file=sys.stderr)
         return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
 
+    # Best effort spawn background worker. Initially spawned during user submit hook.
     try:
         spawn_background_worker()
     except Exception as e:

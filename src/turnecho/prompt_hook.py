@@ -12,6 +12,7 @@ from .constant import (
     CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
     TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT,
 )
+from .worker import spawn_background_worker
 
 
 def main() -> int:
@@ -53,6 +54,13 @@ def main() -> int:
             }
         )
     )
+
+    # Spawn background worker here to reduce process startup delay.
+    try:
+        spawn_background_worker()
+    except Exception as e:
+        print(e, file=sys.stderr)
+
     return 0
 
 

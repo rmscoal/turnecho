@@ -8,7 +8,7 @@ CODEX_DEFAULT_OUTPUT_MESSAGE = "{}"
 TURNECHO_PLUGIN_NAME = "turnecho"
 TURNECHO_MARKETPLACE_NAME = "turnecho"
 TURNECHO_MARKETPLACE_SOURCE = "rmscoal/turnecho"
-TURNECHO_PLUGIN_VERSION = "0.2.3"
+TURNECHO_PLUGIN_VERSION = "0.2.4"
 TURNECHO_MARKETPLACE_REF = f"v{TURNECHO_PLUGIN_VERSION}"
 TURNECHO_PLUGIN_SELECTOR = f"{TURNECHO_PLUGIN_NAME}@{TURNECHO_MARKETPLACE_NAME}"
 TURNECHO_CODEX_HOME_ENVIRONMENT_VARIABLE = "CODEX_HOME"
@@ -20,7 +20,7 @@ TURNECHO_RUNTIME_MARKER_FILE = ".turnecho-runtime.json"
 
 TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT = """
 At the end of your final response, append exactly one TurnEcho summary using this format:
-\n\n<!-- turnecho-summary:v1\nSUMMARY\n-->\n\n
+\n\n<!-- turnecho-summary:v1\n<the_agent_summary_here>\n-->\n\n
 
 Write 1 to 3 short spoken sentences, maximum 60 words.
 Use plain conversational language.

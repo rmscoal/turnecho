@@ -25,7 +25,7 @@ if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/pyproject.toml" ]; then
     empty_output
 fi
 
-runtime="$HOME/.local/share/turnecho/runtimes/0.2.3/.venv"
+runtime="$HOME/.local/share/turnecho/runtimes/0.2.4/.venv"
 if [ ! -x "$runtime/bin/python" ]; then
     empty_output
 fi

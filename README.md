@@ -77,10 +77,11 @@ flowchart LR
     E --> F[System audio output]
 ```
 
-TurnEcho uses two fast Codex hooks. The first asks Codex to include a hidden
-summary marker in its final response. The second validates that marker, stores
-a deduplicated job in SQLite, and starts a detached worker. The hooks do not
-load the speech model or wait for audio.
+TurnEcho uses two fast Codex hooks. The first starts a detached worker and asks
+Codex to include a hidden summary marker in its final response. The second
+validates that marker, stores a deduplicated job in SQLite, and starts another
+worker as a recovery path when needed. The hooks do not load the speech model
+or wait for audio.
 
 The worker claims queued jobs atomically and plays them in order. A
 cross-process `fcntl` lock prevents workers from speaking over each other.
@@ -113,7 +114,7 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.4 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
@@ -153,7 +154,7 @@ versioned runtime layout and managed `turnecho` command.
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.4 turnecho-install --update
 ```
 
 The update installer replaces the pinned marketplace release, reinstalls the
@@ -177,7 +178,7 @@ If the current plugin version is still installed but its runtime or
 `turnecho` command is missing, rerun the normal installer without `--update`:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.2.4 turnecho-install
 ```
 
 This rebuilds the existing release runtime at its permanent path, verifies the
@@ -198,7 +199,7 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 Remove a GitHub installation with the TurnEcho uninstaller:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.3 turnecho-install --uninstall
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.2.4 turnecho-install --uninstall
 ```
 
 This removes the GitHub plugin, its marketplace entry, all marked versioned
