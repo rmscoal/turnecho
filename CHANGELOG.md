@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.4 - 2026-09-02
+
+- Start the detached background worker during `UserPromptSubmit` so worker
+  startup can happen while Codex is preparing the response.
+- Keep the `Stop` hook worker startup as a recovery path for jobs queued after
+  the prompt hook worker has exited.
+
 ## 0.2.3 - 2026-08-25
 
 - Build managed virtual environments at their permanent versioned path so

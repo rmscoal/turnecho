@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from turnecho import stop_hook
+from turnecho import stop_hook, worker
 from turnecho.config import ConfigError, TurnEchoConfig
 from turnecho.constant import TURNECHO_SUMMARY_MAX_CHARS
 
@@ -20,9 +20,9 @@ class HookTests(unittest.TestCase):
             log_path = str(Path(directory) / "worker.log")
             with (
                 patch.object(
-                    stop_hook, "TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX", log_path
+                    worker, "TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX", log_path
                 ),
-                patch.object(stop_hook.subprocess, "Popen") as popen,
+                patch.object(worker.subprocess, "Popen") as popen,
             ):
                 stop_hook.spawn_background_worker()
 
@@ -30,8 +30,8 @@ class HookTests(unittest.TestCase):
         options = popen.call_args.kwargs
         self.assertEqual(command, [sys.executable, "-m", "turnecho.worker"])
         self.assertNotIn("env", options)
-        self.assertIs(options["stdin"], stop_hook.subprocess.DEVNULL)
-        self.assertIs(options["stderr"], stop_hook.subprocess.STDOUT)
+        self.assertIs(options["stdin"], worker.subprocess.DEVNULL)
+        self.assertIs(options["stderr"], worker.subprocess.STDOUT)
         self.assertTrue(options["start_new_session"])
         self.assertTrue(options["close_fds"])
 
@@ -40,10 +40,10 @@ class HookTests(unittest.TestCase):
             log_path = str(Path(directory) / "worker.log")
             with (
                 patch.object(
-                    stop_hook, "TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX", log_path
+                    worker, "TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX", log_path
                 ),
                 patch.dict(os.environ, {"PLUGIN_ROOT": "/cached/turnecho"}),
-                patch.object(stop_hook.subprocess, "Popen") as popen,
+                patch.object(worker.subprocess, "Popen") as popen,
             ):
                 stop_hook.spawn_background_worker()
 

@@ -10,7 +10,7 @@ from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
 from turnecho.constant import TURNECHO_MARKETPLACE_MANIFEST_PATH
 
-CURRENT_VERSION = "0.2.3"
+CURRENT_VERSION = "0.2.4"
 CURRENT_REF = f"v{CURRENT_VERSION}"
 
 

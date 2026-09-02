@@ -5,6 +5,7 @@ loaded, and processes queued messages sequentially.
 """
 
 import fcntl
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,6 +17,7 @@ from .constant import (
     TURNECHO_WORKER_IDLE_TIMEOUT_WITHOUT_JOB_SECONDS,
     TURNECHO_WORKER_LOCK_FILE_PATH_MACOS_LINUX,
     TURNECHO_WORKER_LOCK_RETRY_SECONDS,
+    TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX,
     TURNECHO_WORKER_POLL_INTERVAL_SECONDS,
     TurnEchoJobProcessingStatus,
 )
@@ -26,6 +28,23 @@ from .sqlite import (
     requeue_processing_jobs_from_db,
     update_job_db,
 )
+
+
+def spawn_background_worker() -> None:
+    log_path = Path(TURNECHO_WORKER_LOG_FILE_PATH_MACOS_LINUX).expanduser()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    worker_command = [sys.executable, "-m", "turnecho.worker"]
+
+    with log_path.open("ab") as log_file:
+        subprocess.Popen(
+            worker_command,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+            close_fds=True,
+        )
 
 
 def acquire_worker_lock():
