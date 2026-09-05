@@ -359,6 +359,34 @@ Source code lives in `src/turnecho/`. Tests use Python's standard `unittest`
 framework and mock TTS and audio output, so the normal test suite does not
 play sound or load the model.
 
+### Manual audio diagnostics
+
+Two manual commands generate three fixed sentences with the real configured
+KittenTTS model and report waveform measurements as JSON:
+
+```sh
+make audio-report
+make audio-playback
+```
+
+- `make audio-report` only prints measurements. It does not play audio.
+- `make audio-playback` prints the same report, then plays all three sentences
+  sequentially through the current `sounddevice` playback path.
+- Both commands load the real KittenTTS model with the configured model,
+  voice, and speed. Neither command is part of the normal automated test
+  suite (`python -m unittest discover -s tests` skips
+  `tests/manual_audio_check.py`).
+- The report marks each waveform `ok`, `warning`, or `error`. Warnings flag
+  suspicious waveform properties but do not necessarily mean playback is
+  broken. Mathematical checks cannot replace human listening.
+- To reproduce one worker job more closely, play all three waveforms through
+  a single `play()` call with no gaps, optionally after a silent wait that
+  lets the audio device return to idle first:
+
+```sh
+make audio-playback ARGS="--single-stream --idle-wait 300"
+```
+
 ## License
 
 TurnEcho is released under the [MIT License](LICENSE).
