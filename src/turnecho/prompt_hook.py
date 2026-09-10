@@ -8,10 +8,9 @@ import sys
 
 from .config import ConfigError, load_config
 from .constant import (
-    CODEX_DEFAULT_OUTPUT_MESSAGE,
-    CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
     TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT,
 )
+from .hosts import codex
 from .worker import spawn_background_worker
 
 
@@ -21,37 +20,27 @@ def main() -> int:
         raw_input: object = json.load(sys.stdin)
     except Exception as error:
         print(error, file=sys.stderr)
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(codex.CODEX_DEFAULT_OUTPUT_MESSAGE)
         return 0
 
-    if (
-        not isinstance(raw_input, dict)
-        or raw_input.get("hook_event_name") != CODEX_HOOK_USER_PROMPT_SUBMIT_NAME
-    ):
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+    if not codex.is_user_prompt_submit_payload(raw_input):
+        print(codex.CODEX_DEFAULT_OUTPUT_MESSAGE)
         return 0
 
     try:
         config = load_config()
     except ConfigError as error:
         print(error, file=sys.stderr)
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(codex.CODEX_DEFAULT_OUTPUT_MESSAGE)
         return 0
 
     if not config.enabled:
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(codex.CODEX_DEFAULT_OUTPUT_MESSAGE)
         return 0
 
     print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
-                    "additionalContext": (
-                        TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT
-                    ),
-                }
-            }
+        codex.render_prompt_submit_output(
+            TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT
         )
     )
 
