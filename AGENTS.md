@@ -11,7 +11,10 @@ them sequentially with one detached KittenTTS worker.
 
 Current behavior matters when changing code or documentation:
 
-- Only Codex hook input is supported.
+- Codex and Claude Code hook input is supported through per-host adapters in
+  `src/turnecho/hosts/` over shared core modules. Claude Code `turn_id` values
+  are synthesized from the transcript tail plus a message hash because Claude
+  sends no turn field.
 - Only a validated TurnEcho summary marker at the end of
   `last_assistant_message` is spoken. The full response is not spoken.
 - If the summary is missing or invalid, no job is queued and no voice is
@@ -37,9 +40,12 @@ implemented behavior.
 - `.codex-plugin/plugin.json`: Codex plugin metadata
 - `skills/turnecho-config/SKILL.md`: LLM guidance for CLI configuration
 - `hooks/hooks.json`: plugin hook registration and command
-- `src/turnecho/stop_hook.py`: Stop-hook parsing, validation, queue insertion,
-  and worker startup
-- `src/turnecho/prompt_hook.py`: dependency-free UserPromptSubmit hook
+- `src/turnecho/stop_hook.py`: host-dispatched Stop entry, validation, queue
+  insertion, and worker startup
+- `src/turnecho/prompt_hook.py`: dependency-free UserPromptSubmit entry
+- `src/turnecho/hosts/`: per-host payload parsing and output envelopes
+  (`codex.py`, `claude.py`) over the shared `types.py` event shape
+- `src/turnecho/summary.py`: host-independent summary marker validation
 - `src/turnecho/install_plugin.py`: preflighted GitHub plugin installer
 - `src/turnecho/runtime_preflight.py`: TTS model and audio output checks
 - `src/turnecho/sqlite.py`: SQLite schema and queue operations

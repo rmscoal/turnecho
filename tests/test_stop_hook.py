@@ -194,7 +194,8 @@ class HookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" stop || printf '{}\\n'",
+            'sh "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/run_hook.sh"'
+            " stop || printf '{}\\n'",
         )
 
     def test_stop_hook_starts_without_site_packages(self) -> None:

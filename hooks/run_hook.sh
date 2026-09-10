@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Safely launches a TurnEcho hook with the installed runtime.
-# Missing or invalid runtime inputs produce empty JSON for Codex.
+# Missing or invalid runtime inputs produce empty JSON for the calling host.
 
 empty_output() {
     printf '{}\n'
@@ -20,7 +20,12 @@ case "${1:-}" in
         ;;
 esac
 
-plugin_root="${PLUGIN_ROOT:-}"
+# Codex provides its plugin directory as PLUGIN_ROOT; Claude Code provides
+# CLAUDE_PLUGIN_ROOT instead. Neither name is ours to change, so resolve both
+# explicitly into one local plugin root.
+codex_plugin_root="${PLUGIN_ROOT:-}"
+claude_plugin_root="${CLAUDE_PLUGIN_ROOT:-}"
+plugin_root="${claude_plugin_root:-$codex_plugin_root}"
 if [ -z "$plugin_root" ] || [ ! -f "$plugin_root/pyproject.toml" ]; then
     empty_output
 fi

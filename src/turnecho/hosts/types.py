@@ -5,6 +5,7 @@ every host adapter produces. It contains no host-specific logic and imports
 nothing from the core, so both sides can depend on it freely.
 """
 
+import json
 from dataclasses import dataclass
 from enum import Enum
 
@@ -23,4 +24,15 @@ class TurnEchoEvent:
     session_id: str
     turn_id: str = ""
     message: str = ""
-    stop_hook_active: bool = False
+
+
+def prompt_submit_envelope(hook_event_name: str, instruction: str) -> str:
+    """Render the additional-context envelope both hosts accept today."""
+    return json.dumps(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": hook_event_name,
+                "additionalContext": instruction,
+            }
+        }
+    )

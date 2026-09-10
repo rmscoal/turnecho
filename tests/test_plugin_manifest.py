@@ -22,6 +22,19 @@ class PluginManifestTests(unittest.TestCase):
         self.assertEqual(skill_directories, ["turnecho-config"])
         self.assertTrue((skills_root / "turnecho-config" / "SKILL.md").is_file())
 
+    def test_host_manifests_describe_the_same_plugin(self) -> None:
+        codex_manifest = json.loads(
+            (PROJECT_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")
+        )
+        claude_manifest = json.loads(
+            (PROJECT_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(claude_manifest["name"], codex_manifest["name"])
+        self.assertEqual(claude_manifest["version"], codex_manifest["version"])
+
     def test_release_versions_are_aligned(self) -> None:
         manifest = json.loads(
             (PROJECT_ROOT / ".codex-plugin" / "plugin.json").read_text(encoding="utf-8")

@@ -1,0 +1,10 @@
+{
+  "name": "turnecho",
+  "version": "0.2.4",
+  "description": "A coding assistant plugin that dares to talk back to you on every turn.",
+  "author": {
+    "name": "Rifky Manuel Satyana",
+    "email": "rmscoaldev@gmail.com",
+    "url": "https://github.com/rmscoal"
+  }
+}

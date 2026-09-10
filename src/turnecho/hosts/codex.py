@@ -5,11 +5,11 @@ fields, and stdout envelopes. Core queueing never sees these details; it only
 receives the normalized TurnEchoEvent returned here.
 """
 
-from __future__ import annotations
-
-import json
-
-from .types import TurnEchoEvent, TurnEchoHostSource
+from .types import (
+    TurnEchoEvent,
+    TurnEchoHostSource,
+    prompt_submit_envelope,
+)
 
 CODEX_HOOK_STOP_EVENT_NAME = "Stop"
 CODEX_HOOK_USER_PROMPT_SUBMIT_NAME = "UserPromptSubmit"
@@ -54,11 +54,4 @@ def is_user_prompt_submit_payload(raw_input: object) -> bool:
 
 def render_prompt_submit_output(instruction: str) -> str:
     """Render the Codex UserPromptSubmit additional-context envelope."""
-    return json.dumps(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
-                "additionalContext": instruction,
-            }
-        }
-    )
+    return prompt_submit_envelope(CODEX_HOOK_USER_PROMPT_SUBMIT_NAME, instruction)

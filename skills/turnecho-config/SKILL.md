@@ -5,9 +5,9 @@ description: Inspect and change TurnEcho configuration through its CLI. Use when
 
 # Configure TurnEcho
 
-TurnEcho is a local Codex plugin that speaks a short summary after an agent
-turn. Use this skill only to inspect or change its user configuration. Normal
-TurnEcho operation does not require this skill.
+TurnEcho is a local plugin for Codex and Claude Code that speaks a short
+summary after an agent turn. Use this skill only to inspect or change its user
+configuration. Normal TurnEcho operation does not require this skill.
 
 ## Use the CLI
 
