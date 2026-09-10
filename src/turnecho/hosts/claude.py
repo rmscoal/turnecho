@@ -58,7 +58,9 @@ def derive_turn_id(transcript_path: object, message: str) -> str:
     event. An unreadable transcript falls back to a unique id so the turn is
     still spoken instead of colliding with another turn.
     """
-    digest = hashlib.sha1(message.encode("utf-8")).hexdigest()[:12]
+    # Replace lone surrogates so hostile input fails safe instead of crashing
+    # the hook before it can print its empty-JSON output.
+    digest = hashlib.sha1(message.encode("utf-8", errors="replace")).hexdigest()[:12]
     count = _count_assistant_turns(transcript_path)
     if count is None:
         return f"turn-{uuid4().hex[:8]}-{digest}"

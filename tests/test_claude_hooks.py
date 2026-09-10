@@ -51,6 +51,11 @@ class ClaudeAdapterTests(unittest.TestCase):
                 claude.derive_turn_id(transcript, message), f"turn-2-{digest}"
             )
 
+    def test_derive_turn_id_survives_lone_surrogates(self) -> None:
+        turn_id = claude.derive_turn_id(None, "Hi \ud800 done.")
+
+        self.assertTrue(turn_id.startswith("turn-"))
+
     def test_derive_turn_id_falls_back_without_readable_transcript(self) -> None:
         message = "Done."
         digest = hashlib.sha1(message.encode()).hexdigest()[:12]
@@ -134,6 +139,15 @@ class ClaudeAdapterTests(unittest.TestCase):
         self.assertEqual(insert.call_args.kwargs["session_id"], "abc123")
         self.assertTrue(insert.call_args.kwargs["turn_id"].startswith("turn-2-"))
         self.assertEqual(insert.call_args.kwargs["message"], "All good.")
+
+    def test_stop_surrogate_message_fails_safe(self) -> None:
+        stdout, stderr, insert = self.run_stop_hook(
+            {**self.stop_payload(), "last_assistant_message": "Hi \ud800 done."}
+        )
+
+        self.assertEqual(stdout, "{}\n")
+        self.assertEqual(stderr, "")
+        insert.assert_not_called()
 
     def test_stop_dispatch_still_queues_codex_job(self) -> None:
         stdout, stderr, insert = self.run_stop_hook(
