@@ -50,21 +50,33 @@ def _count_assistant_turns(transcript_path: object) -> int | None:
     return count
 
 
+def _transcript_size(transcript_path: object) -> int | None:
+    """Return the transcript file size, or None when unreadable."""
+    if not isinstance(transcript_path, str) or not transcript_path.strip():
+        return None
+    try:
+        return Path(transcript_path).expanduser().stat().st_size
+    except OSError:
+        return None
+
+
 def derive_turn_id(transcript_path: object, message: str) -> str:
     """Build a stable turn id without a Codex-style turn field.
 
-    The assistant-turn count keeps turns ordered while the message hash keeps
-    distinct summaries distinct when the transcript lags behind the Stop
-    event. An unreadable transcript falls back to a unique id so the turn is
-    still spoken instead of colliding with another turn.
+    The assistant-turn count keeps turns ordered, the transcript size keeps
+    repeated messages distinct once the tail window starts sliding, and the
+    message hash keeps distinct summaries distinct when the transcript lags
+    behind the Stop event. An unreadable transcript falls back to a unique
+    id so the turn is still spoken instead of colliding with another turn.
     """
     # Replace lone surrogates so hostile input fails safe instead of crashing
     # the hook before it can print its empty-JSON output.
     digest = hashlib.sha1(message.encode("utf-8", errors="replace")).hexdigest()[:12]
     count = _count_assistant_turns(transcript_path)
-    if count is None:
+    size = _transcript_size(transcript_path)
+    if count is None or size is None:
         return f"turn-{uuid4().hex[:8]}-{digest}"
-    return f"turn-{count}-{digest}"
+    return f"turn-{count}-{size}-{digest}"
 
 
 def parse_stop_payload(raw_input: object) -> TurnEchoEvent | None:

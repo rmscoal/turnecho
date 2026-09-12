@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Sandboxed end-to-end hook check with human-readable verdicts.
 
-Runs the real hook entry points as subprocesses, the way Codex and Claude
-Code invoke them, against a temporary HOME. Verifies stdout contracts and
-queue rows for both hosts. A human reads the verdicts below.
+Runs the real hook entry points as subprocesses against a temporary HOME.
+Verifies stdout contracts and queue rows for both hosts, including the
+long-session repeat and unknown-host edge cases. A human reads the verdicts
+below.
 
-Workers speak both summaries aloud so a human can verify by ear; set
+Workers speak all four summaries aloud so a human can verify by ear; set
 E2E_QUIET=1 to skip playback (workers are then stopped before TTS runs).
 A live host session remains the final acceptance step.
 """
@@ -22,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from turnecho.hosts.claude import CLAUDE_TRANSCRIPT_TAIL_BYTES
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_PATH = str(REPO_ROOT / "src")
 REAL_HOME = os.environ.get("HOME", "")
@@ -29,6 +32,11 @@ CLAUDE_MESSAGE = (
     "Hi from Claude Code. If you're hearing this, TurnEcho in Claude Code works."
 )
 CODEX_MESSAGE = "Hi from Codex. If you're hearing this, TurnEcho in Codex works."
+TAIL_MESSAGE = (
+    "Hi again from Claude Code. If you're hearing this twice, "
+    "repeated turns in long sessions work."
+)
+EXPECTED_JOB_COUNT = 4
 TERMINAL_STATUSES = {"success", "failed"}
 CHECKS: list[tuple[str, bool]] = []
 
@@ -66,7 +74,12 @@ def stop_new_workers(before: set[str]) -> None:
         time.sleep(0.2)
 
 
-def run_hook(module: str, payload: dict, home: str) -> subprocess.CompletedProcess[str]:
+def run_hook(
+    module: str,
+    payload: dict,
+    home: str,
+    args: list[str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["HOME"] = home
     environment["PYTHONPATH"] = SOURCE_PATH
@@ -75,12 +88,29 @@ def run_hook(module: str, payload: dict, home: str) -> subprocess.CompletedProce
     if REAL_HOME and model_cache.is_dir():
         environment["HF_HOME"] = str(model_cache)
     return subprocess.run(
-        [sys.executable, "-m", module],
+        [sys.executable, "-m", module, *(args or [])],
         input=json.dumps(payload),
         capture_output=True,
         env=environment,
         text=True,
     )
+
+
+def long_transcript_pair() -> str:
+    """Return one user/assistant turn sized for the long-session check."""
+    # Both lines share one byte length so the tail window slides by whole
+    # entries and the assistant count saturates like a real long session.
+    user_entry = json.dumps({"type": "user", "message": "u" * 205}) + "\n"
+    assistant_entry = json.dumps({"type": "assistant", "message": "a" * 200}) + "\n"
+    assert len(user_entry.encode()) == len(assistant_entry.encode())
+    return user_entry + assistant_entry
+
+
+def write_long_transcript(path: Path) -> None:
+    """Write a transcript larger than the hook's tail window."""
+    pair = long_transcript_pair()
+    pairs = CLAUDE_TRANSCRIPT_TAIL_BYTES // len(pair.encode()) + 2
+    path.write_text(pair * pairs, encoding="utf-8")
 
 
 def queue_rows(home: str) -> list[dict]:
@@ -106,7 +136,7 @@ def wait_for_terminal(home: str, timeout_seconds: int = 240) -> None:
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         rows = queue_rows(home)
-        if len(rows) >= 2 and all(
+        if len(rows) >= EXPECTED_JOB_COUNT and all(
             row.get("processing_status") in TERMINAL_STATUSES for row in rows
         ):
             return
@@ -149,6 +179,22 @@ def main() -> int:
             f"stderr={prompt_result.stderr!r}",
         )
 
+        bogus_prompt = run_hook(
+            "turnecho.prompt_hook",
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "e2e-bogus",
+                "prompt": "Do it.",
+            },
+            home,
+            ["--host=bogus"],
+        )
+        check(
+            "Unknown host prompt stays silent",
+            bogus_prompt.stdout == "{}\n" and bogus_prompt.stderr == "",
+            f"stdout={bogus_prompt.stdout!r} stderr={bogus_prompt.stderr!r}",
+        )
+
         claude_stop = run_hook(
             "turnecho.stop_hook",
             {
@@ -187,8 +233,42 @@ def main() -> int:
             f"stdout={codex_stop.stdout!r} stderr={codex_stop.stderr!r}",
         )
 
-        rows = {row["host"]: row for row in queue_rows(home)}
-        claude_row = rows.get("claude_code", {})
+        long_transcript = Path(home) / "long-transcript.jsonl"
+        write_long_transcript(long_transcript)
+        check(
+            "Long-session transcript exceeds the tail window",
+            long_transcript.stat().st_size > CLAUDE_TRANSCRIPT_TAIL_BYTES,
+            f"size={long_transcript.stat().st_size}",
+        )
+
+        # Same session and identical message twice, with the transcript
+        # growing between the turns the way a long session moves the tail.
+        tail_payload = {
+            "hook_event_name": "Stop",
+            "session_id": "e2e-claude-tail",
+            "transcript_path": str(long_transcript),
+            "stop_hook_active": False,
+            "last_assistant_message": (
+                f"Done.\n\n<!-- turnecho-summary:v1\n{TAIL_MESSAGE}\n-->"
+            ),
+        }
+        tail_first = run_hook("turnecho.stop_hook", tail_payload, home)
+        with long_transcript.open("a", encoding="utf-8") as handle:
+            handle.write(long_transcript_pair())
+        tail_second = run_hook("turnecho.stop_hook", tail_payload, home)
+        check(
+            "Long-session stops stay silent",
+            tail_first.stdout == "{}\n"
+            and tail_first.stderr == ""
+            and tail_second.stdout == "{}\n"
+            and tail_second.stderr == "",
+            f"first={tail_first.stdout!r} second={tail_second.stdout!r}",
+        )
+
+        rows = queue_rows(home)
+        claude_row = next(
+            (row for row in rows if row["session_id"] == "e2e-claude"), {}
+        )
         check(
             "Claude job queued with a synthesized turn",
             claude_row.get("session_id") == "e2e-claude"
@@ -200,7 +280,7 @@ def main() -> int:
             in {"pending", "processing", "success"},
             f"row={claude_row!r}",
         )
-        codex_row = rows.get("codex", {})
+        codex_row = next((row for row in rows if row["session_id"] == "e2e-codex"), {})
         check(
             "Codex job queued with its own turn",
             codex_row.get("session_id") == "e2e-codex"
@@ -210,24 +290,55 @@ def main() -> int:
             in {"pending", "processing", "success"},
             f"row={codex_row!r}",
         )
+        tail_rows = [row for row in rows if row["session_id"] == "e2e-claude-tail"]
+        tail_turn_ids = [str(row.get("turn_id", "")) for row in tail_rows]
+        tail_counts = [turn_id.split("-")[1] for turn_id in tail_turn_ids]
+        check(
+            "Repeated long-session turns queue distinct jobs",
+            len(tail_rows) == 2
+            # The tail count saturates, so equal counts prove this run really
+            # exercised the sliding window instead of passing vacuously.
+            and len(set(tail_counts)) == 1
+            and len(set(tail_turn_ids)) == 2
+            and all(row.get("message") == TAIL_MESSAGE for row in tail_rows)
+            and all(
+                row.get("processing_status") in {"pending", "processing", "success"}
+                for row in tail_rows
+            ),
+            f"turn_ids={tail_turn_ids!r}",
+        )
 
         if os.environ.get("E2E_QUIET") == "1":
             stop_new_workers(workers_before)
         else:
-            print("Listening check: both summaries will now play aloud.")
+            print("Listening check: all four summaries will now play aloud.")
             wait_for_terminal(home)
             stop_new_workers(workers_before)
-            spoken = {row["host"]: row for row in queue_rows(home)}
-            for host, text in (
-                ("claude_code", CLAUDE_MESSAGE),
-                ("codex", CODEX_MESSAGE),
+            spoken = queue_rows(home)
+            for session_id, text in (
+                ("e2e-claude", CLAUDE_MESSAGE),
+                ("e2e-codex", CODEX_MESSAGE),
             ):
-                status = spoken.get(host, {}).get("processing_status")
+                matches = [row for row in spoken if row["session_id"] == session_id]
+                status = (
+                    matches[0].get("processing_status") if len(matches) == 1 else None
+                )
                 check(
-                    f"Human heard the {host} summary",
+                    f"Human heard the {session_id} summary",
                     status == "success",
                     f"status={status} — you should have heard: {text!r}",
                 )
+            tail_matches = [
+                row for row in spoken if row["session_id"] == "e2e-claude-tail"
+            ]
+            tail_statuses = [row.get("processing_status") for row in tail_matches]
+            check(
+                "Human heard the repeated long-session summary twice",
+                len(tail_matches) == 2
+                and all(status == "success" for status in tail_statuses),
+                f"statuses={tail_statuses} — you should have heard twice: "
+                f"{TAIL_MESSAGE!r}",
+            )
         check(
             "No stray workers left behind",
             not (worker_pids() - workers_before),

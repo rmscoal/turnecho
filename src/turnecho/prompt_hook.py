@@ -27,8 +27,11 @@ def main() -> int:
     host = detect_host(raw_input, forced_host(sys.argv[1:]))
     if host == TurnEchoHostSource.CLAUDE_CODE.value:
         is_prompt_submit = claude.is_user_prompt_submit_payload(raw_input)
-    else:
+    elif host == TurnEchoHostSource.CODEX.value:
         is_prompt_submit = codex.is_user_prompt_submit_payload(raw_input)
+    else:
+        print(default_output(host))
+        return 0
     if not is_prompt_submit:
         print(default_output(host))
         return 0

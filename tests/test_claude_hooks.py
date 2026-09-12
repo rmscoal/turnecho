@@ -46,15 +46,41 @@ class ClaudeAdapterTests(unittest.TestCase):
             transcript = self.write_transcript(directory)
             message = "Done.\n\n<!-- turnecho-summary:v1\nAll good.\n-->"
             digest = hashlib.sha1(message.encode()).hexdigest()[:12]
+            size = Path(transcript).stat().st_size
 
             self.assertEqual(
-                claude.derive_turn_id(transcript, message), f"turn-2-{digest}"
+                claude.derive_turn_id(transcript, message),
+                f"turn-2-{size}-{digest}",
             )
 
     def test_derive_turn_id_survives_lone_surrogates(self) -> None:
         turn_id = claude.derive_turn_id(None, "Hi \ud800 done.")
 
         self.assertTrue(turn_id.startswith("turn-"))
+
+    def test_derive_turn_id_distinguishes_repeated_messages_in_moving_tail(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as directory:
+            transcript = Path(directory) / "transcript.jsonl"
+            # Every line has the same byte length so the tail window slides by
+            # whole entries and the assistant count saturates deterministically.
+            user_entry = json.dumps({"type": "user", "message": "u" * 205}) + "\n"
+            assistant_entry = (
+                json.dumps({"type": "assistant", "message": "a" * 200}) + "\n"
+            )
+            assert len(user_entry.encode()) == len(assistant_entry.encode())
+            pair = user_entry + assistant_entry
+            pairs = claude.CLAUDE_TRANSCRIPT_TAIL_BYTES // len(pair.encode()) + 2
+            transcript.write_text(pair * pairs, encoding="utf-8")
+
+            message = "Done.\n\n<!-- turnecho-summary:v1\nAll good.\n-->"
+            first = claude.derive_turn_id(str(transcript), message)
+            with transcript.open("a", encoding="utf-8") as handle:
+                handle.write(pair)
+            second = claude.derive_turn_id(str(transcript), message)
+
+            self.assertNotEqual(first, second)
 
     def test_derive_turn_id_falls_back_without_readable_transcript(self) -> None:
         message = "Done."
@@ -210,6 +236,26 @@ class ClaudeAdapterTests(unittest.TestCase):
 
         self.assertEqual(stdout.getvalue(), "{}\n")
         insert.assert_not_called()
+
+    def test_prompt_unknown_host_fails_safe(self) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            TemporaryDirectory() as home,
+            patch.dict(os.environ, {"HOME": home}),
+            patch.object(sys, "argv", ["prompt_hook", "--host=bogus"]),
+            patch.object(
+                sys,
+                "stdin",
+                io.StringIO(json.dumps({"hook_event_name": "UserPromptSubmit"})),
+            ),
+            patch.object(prompt_hook, "spawn_background_worker") as spawn,
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            prompt_hook.main()
+
+        self.assertEqual(stdout.getvalue(), "{}\n")
+        spawn.assert_not_called()
 
     def test_prompt_dispatch_returns_claude_context(self) -> None:
         stdout, stderr = io.StringIO(), io.StringIO()
