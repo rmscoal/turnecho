@@ -266,6 +266,11 @@ def main() -> int:
         )
 
         rows = queue_rows(home)
+        check(
+            f"Exactly {EXPECTED_JOB_COUNT} jobs queued",
+            len(rows) == EXPECTED_JOB_COUNT,
+            f"rows={rows!r}",
+        )
         claude_row = next(
             (row for row in rows if row["session_id"] == "e2e-claude"), {}
         )
