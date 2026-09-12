@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0 - 2026-09-12
+
+- Support Claude Code alongside Codex through per-host hook adapters over a
+  shared core, with dual plugin packaging.
+- Synthesize Claude Code turn ids from the transcript plus a message hash,
+  keeping repeated messages in long sessions distinct.
+- Fail safe to empty output for unknown hosts and unreadable transcripts.
+- Add an audible end-to-end hook check (`make e2e`) covering both hosts.
+
 ## 0.2.4 - 2026-09-02
 
 - Start the detached background worker during `UserPromptSubmit` so worker
