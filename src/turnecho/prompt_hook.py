@@ -8,10 +8,10 @@ import sys
 
 from .config import ConfigError, load_config
 from .constant import (
-    CODEX_DEFAULT_OUTPUT_MESSAGE,
-    CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
     TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT,
 )
+from .hosts import claude, codex, default_output, detect_host, forced_host
+from .hosts.types import TurnEchoHostSource
 from .worker import spawn_background_worker
 
 
@@ -21,39 +21,44 @@ def main() -> int:
         raw_input: object = json.load(sys.stdin)
     except Exception as error:
         print(error, file=sys.stderr)
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(default_output(detect_host(None, forced_host(sys.argv[1:]))))
         return 0
 
-    if (
-        not isinstance(raw_input, dict)
-        or raw_input.get("hook_event_name") != CODEX_HOOK_USER_PROMPT_SUBMIT_NAME
-    ):
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+    host = detect_host(raw_input, forced_host(sys.argv[1:]))
+    if host == TurnEchoHostSource.CLAUDE_CODE.value:
+        is_prompt_submit = claude.is_user_prompt_submit_payload(raw_input)
+    elif host == TurnEchoHostSource.CODEX.value:
+        is_prompt_submit = codex.is_user_prompt_submit_payload(raw_input)
+    else:
+        print(default_output(host))
+        return 0
+    if not is_prompt_submit:
+        print(default_output(host))
         return 0
 
     try:
         config = load_config()
     except ConfigError as error:
         print(error, file=sys.stderr)
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(default_output(host))
         return 0
 
     if not config.enabled:
-        print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        print(default_output(host))
         return 0
 
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
-                    "additionalContext": (
-                        TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT
-                    ),
-                }
-            }
+    if host == TurnEchoHostSource.CLAUDE_CODE.value:
+        print(
+            claude.render_prompt_submit_output(
+                TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT
+            )
         )
-    )
+    else:
+        print(
+            codex.render_prompt_submit_output(
+                TURNECHO_USER_PROMPT_SUBMIT_HOOK_SUMMARY_INSTRUCTION_PROMPT
+            )
+        )
 
     # Spawn background worker here to reduce process startup delay.
     try:

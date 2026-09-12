@@ -2,94 +2,57 @@ import json
 import sys
 
 from .config import ConfigError, load_config
-from .constant import (
-    CODEX_DEFAULT_OUTPUT_MESSAGE,
-    CODEX_HOOK_STOP_EVENT_NAME,
-    TURNECHO_SUMMARY_CLOSE_MARKER,
-    TURNECHO_SUMMARY_MAX_CHARS,
-    TURNECHO_SUMMARY_OPEN_MARKER,
-)
+from .hosts import claude, codex, default_output, detect_host, forced_host
+from .hosts.types import TurnEchoHostSource
 from .sqlite import insert_job_db
+from .summary import extract_turnecho_summary_from_agent_message
 from .worker import spawn_background_worker
 
-
-def extract_turnecho_summary_from_agent_message(agent_message: str) -> str | None:
-    normalized_message = agent_message.replace("\r\n", "\n").rstrip()
-    if not normalized_message.endswith(TURNECHO_SUMMARY_CLOSE_MARKER):
-        return None
-
-    marker_start = normalized_message.rfind(TURNECHO_SUMMARY_OPEN_MARKER)
-    if marker_start == -1:
-        return None
-
-    summary_start = marker_start + len(TURNECHO_SUMMARY_OPEN_MARKER)
-    summary_end = len(normalized_message) - len(TURNECHO_SUMMARY_CLOSE_MARKER)
-    raw_summary = normalized_message[summary_start:summary_end]
-
-    if "<!--" in raw_summary or "-->" in raw_summary:
-        return None
-
-    summary = " ".join(raw_summary.split())
-    if not summary:
-        return None
-
-    if len(summary) > TURNECHO_SUMMARY_MAX_CHARS:
-        return None
-
-    return summary
+__all__ = [
+    "extract_turnecho_summary_from_agent_message",
+    "handle_stop_hook",
+    "main",
+]
 
 
-def handle_stop_hook(raw_input: object) -> None:
-    if not isinstance(raw_input, dict):
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
-
-    # Validation
-    if raw_input.get("hook_event_name") != CODEX_HOOK_STOP_EVENT_NAME:
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
-    session_id = raw_input.get("session_id")
-    if not isinstance(session_id, str) or session_id.strip() == "":
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
-    turn_id = raw_input.get("turn_id")
-    if not isinstance(turn_id, str) or turn_id.strip() == "":
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
-    last_assistant_message = raw_input.get("last_assistant_message")
-    if (
-        not isinstance(last_assistant_message, str)
-        or last_assistant_message.strip() == ""
-    ):
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
-    if raw_input.get("stop_hook_active", False):
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+def handle_stop_hook(raw_input: object, host: str | None = None) -> None:
+    resolved_host = host or detect_host(raw_input, forced_host(sys.argv[1:]))
+    if resolved_host == TurnEchoHostSource.CLAUDE_CODE.value:
+        event = claude.parse_stop_payload(raw_input)
+    elif resolved_host == TurnEchoHostSource.CODEX.value:
+        event = codex.parse_stop_payload(raw_input)
+    else:
+        event = None
+    if event is None:
+        return print(default_output(resolved_host))
 
     try:
         config = load_config()
     except ConfigError as error:
         print(error, file=sys.stderr)
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return print(default_output(resolved_host))
 
     if not config.enabled:
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return print(default_output(resolved_host))
 
-    turnecho_message = extract_turnecho_summary_from_agent_message(
-        last_assistant_message
-    )
+    turnecho_message = extract_turnecho_summary_from_agent_message(event.message)
     if not isinstance(turnecho_message, str) or turnecho_message.strip() == "":
         # Ignore non-readable TurnEcho messages without changing the agent response.
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return print(default_output(resolved_host))
 
     # Save task into db
     try:
         insert_job_db(
-            host="codex",
-            session_id=session_id,
-            turn_id=turn_id,
+            host=event.host,
+            session_id=event.session_id,
+            turn_id=event.turn_id,
             message=turnecho_message,
             voice=config.voice,
             speed=config.speed,
         )
     except Exception as e:
         print(e, file=sys.stderr)
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return print(default_output(resolved_host))
 
     # Best effort spawn background worker. Initially spawned during user submit hook.
     try:
@@ -97,7 +60,7 @@ def handle_stop_hook(raw_input: object) -> None:
     except Exception as e:
         print(e, file=sys.stderr)
 
-    print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+    print(default_output(resolved_host))
 
 
 def main() -> None:
@@ -105,15 +68,9 @@ def main() -> None:
         stdin_object: object = json.load(sys.stdin)
     except Exception as e:
         print(e, file=sys.stderr)
-        return print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+        return print(default_output(detect_host(None, forced_host(sys.argv[1:]))))
 
-    if (
-        isinstance(stdin_object, dict)
-        and stdin_object.get("hook_event_name") == CODEX_HOOK_STOP_EVENT_NAME
-    ):
-        return handle_stop_hook(stdin_object)
-
-    print(CODEX_DEFAULT_OUTPUT_MESSAGE)
+    return handle_stop_hook(stdin_object)
 
 
 if __name__ == "__main__":

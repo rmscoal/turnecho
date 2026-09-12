@@ -111,7 +111,8 @@ class UserPromptSubmitHookTests(unittest.TestCase):
 
         self.assertEqual(
             command,
-            "sh \"$PLUGIN_ROOT/hooks/run_hook.sh\" prompt || printf '{}\\n'",
+            'sh "${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/run_hook.sh"'
+            " prompt || printf '{}\\n'",
         )
 
     def test_registered_prompt_hook_fails_safe_when_plugin_root_is_missing(
@@ -124,6 +125,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
 
         with TemporaryDirectory() as directory:
             environment = os.environ.copy()
+            # Codex provides PLUGIN_ROOT; a dangling one must still fail safe.
             environment["PLUGIN_ROOT"] = str(Path(directory) / "removed-plugin")
             result = subprocess.run(
                 ["sh", "-c", command],
@@ -138,7 +140,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "{}\n")
         self.assertNotEqual(result.stderr, "")
 
-    def test_shell_launcher_runs_hook_with_the_stable_runtime(self) -> None:
+    def run_launcher_with_host_env(self, host: str) -> tuple[object, list[str]]:
         launcher = PROJECT_ROOT / "hooks" / "run_hook.sh"
         with TemporaryDirectory() as directory:
             root = Path(directory)
@@ -170,13 +172,21 @@ class UserPromptSubmitHookTests(unittest.TestCase):
             )
             runtime_python.chmod(0o755)
 
+            if host == "codex":
+                # Codex provides PLUGIN_ROOT.
+                host_env = {"PLUGIN_ROOT": str(plugin_root)}
+            else:
+                # Claude Code provides CLAUDE_PLUGIN_ROOT instead.
+                host_env = {"CLAUDE_PLUGIN_ROOT": str(plugin_root)}
             environment = os.environ.copy()
+            environment.pop("PLUGIN_ROOT", None)
+            environment.pop("CLAUDE_PLUGIN_ROOT", None)
             environment.update(
                 {
                     "HOME": str(root / "home"),
                     "PATH": "/usr/bin:/bin",
-                    "PLUGIN_ROOT": str(plugin_root),
                     "PYTHON_LOG": str(python_log),
+                    **host_env,
                 }
             )
 
@@ -191,8 +201,24 @@ class UserPromptSubmitHookTests(unittest.TestCase):
 
             invocation = python_log.read_text(encoding="utf-8").splitlines()
 
+        return json.loads(result.stdout), invocation
+
+    def test_shell_launcher_runs_hook_with_the_stable_runtime(self) -> None:
+        output, invocation = self.run_launcher_with_host_env("codex")
+
+        assert isinstance(output, dict)
         self.assertEqual(
-            json.loads(result.stdout)["hookSpecificOutput"]["hookEventName"],
+            output["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit",
+        )
+        self.assertEqual(invocation, ["-m", "turnecho.prompt_hook"])
+
+    def test_shell_launcher_resolves_the_claude_plugin_root(self) -> None:
+        output, invocation = self.run_launcher_with_host_env("claude_code")
+
+        assert isinstance(output, dict)
+        self.assertEqual(
+            output["hookSpecificOutput"]["hookEventName"],
             "UserPromptSubmit",
         )
         self.assertEqual(invocation, ["-m", "turnecho.prompt_hook"])
@@ -211,6 +237,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
             environment.update(
                 {
                     "HOME": str(root / "home"),
+                    # Codex provides PLUGIN_ROOT.
                     "PLUGIN_ROOT": str(plugin_root),
                 }
             )

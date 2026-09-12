@@ -61,10 +61,11 @@ reviewing another window, or when you briefly step away from the screen.
 - **Simple configuration.** A local command controls the model, voice, speech
   speed, and enabled state.
 
-TurnEcho currently supports Codex on macOS and Linux. It has no graphical
-configuration interface. A turn produces audio only when Codex includes a
-valid TurnEcho summary marker at the end of its final message. Missing or
-invalid markers are ignored without changing the response.
+TurnEcho currently supports Codex and Claude Code on macOS and Linux. It has
+no graphical configuration interface. A turn produces audio only when the
+assistant includes a valid TurnEcho summary marker at the end of its final
+message. Missing or invalid markers are ignored without changing the
+response.
 
 ### How it works
 
@@ -77,11 +78,11 @@ flowchart LR
     E --> F[System audio output]
 ```
 
-TurnEcho uses two fast Codex hooks. The first starts a detached worker and asks
-Codex to include a hidden summary marker in its final response. The second
-validates that marker, stores a deduplicated job in SQLite, and starts another
-worker as a recovery path when needed. The hooks do not load the speech model
-or wait for audio.
+TurnEcho uses two fast hooks on each supported host. The first starts a
+detached worker and asks the assistant to include a hidden summary marker in
+its final response. The second validates that marker, stores a deduplicated
+job in SQLite, and starts another worker as a recovery path when needed. The
+hooks do not load the speech model or wait for audio.
 
 The worker claims queued jobs atomically and plays them in order. A
 cross-process `fcntl` lock prevents workers from speaking over each other.
@@ -325,7 +326,8 @@ uv sync --no-dev
 ### Test the hook manually
 
 If your Codex version does not offer local plugin installation, you can test
-the hook from the repository with:
+the hook from the repository with (`PLUGIN_ROOT` stands in for the variable
+Codex normally provides):
 
 ```sh
 printf '%s' '{

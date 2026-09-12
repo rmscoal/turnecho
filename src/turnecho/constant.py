@@ -1,9 +1,19 @@
 from enum import Enum
 from pathlib import Path
 
-CODEX_HOOK_STOP_EVENT_NAME = "Stop"
-CODEX_HOOK_USER_PROMPT_SUBMIT_NAME = "UserPromptSubmit"
-CODEX_DEFAULT_OUTPUT_MESSAGE = "{}"
+from .hosts.codex import (
+    CODEX_DEFAULT_OUTPUT_MESSAGE,
+    CODEX_HOOK_STOP_EVENT_NAME,
+    CODEX_HOOK_USER_PROMPT_SUBMIT_NAME,
+)
+from .hosts.types import TurnEchoHostSource
+
+__all__ = [
+    "CODEX_DEFAULT_OUTPUT_MESSAGE",
+    "CODEX_HOOK_STOP_EVENT_NAME",
+    "CODEX_HOOK_USER_PROMPT_SUBMIT_NAME",
+    "TurnEchoHostSource",
+]
 
 TURNECHO_PLUGIN_NAME = "turnecho"
 TURNECHO_MARKETPLACE_NAME = "turnecho"
@@ -69,9 +79,3 @@ class TurnEchoJobProcessingStatus(Enum):
     PROCESSING = "processing"
     FAILED = "failed"
     SUCCESS = "success"
-
-
-class TurnEchoHostSource(Enum):
-    CODEX = "codex"
-    CLAUDE_CODE = "claude_code"
-    OPENCODE = "opencode"
