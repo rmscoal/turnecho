@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1 - 2026-09-17
+
+- Detect the installed Codex and Claude Code CLIs and install TurnEcho into
+  each detected host automatically, for both GitHub and local-checkout
+  installs, with `--host` and `--skip-*` flags to narrow the selection.
+- Add Claude Code marketplace packaging and a directory-marketplace flow for
+  local-checkout installs and updates.
+- Skip Codex-only files on Claude-only machines while keeping `--skip-codex`
+  metadata preparation for a later manual `codex plugin add`.
+- Share one versioned runtime across hosts on multi-host GitHub installs and
+  roll every host back when any step fails.
+
 ## 0.3.0 - 2026-09-12
 
 - Support Claude Code alongside Codex through per-host hook adapters over a

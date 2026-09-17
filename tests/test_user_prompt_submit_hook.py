@@ -157,7 +157,7 @@ class UserPromptSubmitHookTests(unittest.TestCase):
                 / "share"
                 / "turnecho"
                 / "runtimes"
-                / "0.3.0"
+                / "0.3.1"
                 / ".venv"
                 / "bin"
                 / "python"
