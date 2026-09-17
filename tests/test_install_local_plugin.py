@@ -1,10 +1,13 @@
+import argparse
+import io
 import json
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from turnecho import install_plugin as github_installer
 from turnecho.constant import TURNECHO_PLUGIN_VERSION
@@ -15,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from install_local_plugin import (  # noqa: E402
     InstallError,
     install_plugin,
+    main,
 )
 from update_plugin_cachebuster import update_plugin_cachebuster  # noqa: E402
 
@@ -316,6 +320,358 @@ class LocalPluginInstallerTests(unittest.TestCase):
                 ["codex", "plugin", "add", "turnecho@personal"],
                 check=True,
             )
+
+    def test_install_runs_claude_flow_when_enabled(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ),
+                patch("install_local_plugin.run_json_list_command") as run_json_list,
+                patch("install_local_plugin.run_checked_command") as run,
+            ):
+                run_json_list.side_effect = [[], []]
+                install_plugin(
+                    plugin_root,
+                    plugin_link=root / "plugins" / "turnecho",
+                    marketplace_path=root / "marketplace.json",
+                    command_path=root / "bin" / "turnecho",
+                    runtime_base=root / "runtimes",
+                    run_codex=False,
+                    run_claude=True,
+                )
+
+            self.assertEqual(
+                run.call_args_list,
+                [
+                    call(
+                        [
+                            "claude",
+                            "plugin",
+                            "marketplace",
+                            "add",
+                            str(plugin_root.resolve()),
+                            "--scope",
+                            "user",
+                        ]
+                    ),
+                    call(
+                        [
+                            "claude",
+                            "plugin",
+                            "install",
+                            "turnecho@turnecho",
+                            "--scope",
+                            "user",
+                        ]
+                    ),
+                ],
+            )
+
+    def test_install_skips_existing_claude_marketplace_and_plugin(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ),
+                patch(
+                    "install_local_plugin.run_json_list_command",
+                    side_effect=[
+                        [
+                            {
+                                "name": "turnecho",
+                                "source": "directory",
+                                "path": str(plugin_root.resolve()),
+                            }
+                        ],
+                        [{"id": "turnecho@turnecho"}],
+                    ],
+                ),
+                patch("install_local_plugin.run_checked_command") as run,
+            ):
+                install_plugin(
+                    plugin_root,
+                    plugin_link=root / "plugins" / "turnecho",
+                    marketplace_path=root / "marketplace.json",
+                    command_path=root / "bin" / "turnecho",
+                    runtime_base=root / "runtimes",
+                    run_codex=False,
+                    run_claude=True,
+                )
+
+            run.assert_not_called()
+
+    def test_claude_marketplace_from_other_source_is_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ),
+                patch(
+                    "install_local_plugin.run_json_list_command",
+                    side_effect=[
+                        [
+                            {
+                                "name": "turnecho",
+                                "source": "github",
+                                "repo": "rmscoal/turnecho",
+                            }
+                        ],
+                    ],
+                ),
+                patch("install_local_plugin.run_checked_command") as run,
+                self.assertRaisesRegex(InstallError, "different source"),
+            ):
+                install_plugin(
+                    plugin_root,
+                    plugin_link=root / "plugins" / "turnecho",
+                    marketplace_path=root / "marketplace.json",
+                    command_path=root / "bin" / "turnecho",
+                    runtime_base=root / "runtimes",
+                    run_codex=False,
+                    run_claude=True,
+                )
+
+            run.assert_not_called()
+
+    def test_update_refreshes_installed_claude_plugin(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+            plugin_link = root / "plugins" / "turnecho"
+            marketplace_path = root / "marketplace.json"
+
+            install_plugin(
+                plugin_root,
+                plugin_link=plugin_link,
+                marketplace_path=marketplace_path,
+                run_codex=False,
+                sync_dependencies=False,
+            )
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.run_json_list_command",
+                    side_effect=[
+                        [
+                            {
+                                "name": "turnecho",
+                                "source": "directory",
+                                "path": str(plugin_root.resolve()),
+                            }
+                        ],
+                        [{"id": "turnecho@turnecho"}],
+                    ],
+                ),
+                patch("install_local_plugin.run_checked_command") as run,
+            ):
+                install_plugin(
+                    plugin_root,
+                    plugin_link=plugin_link,
+                    marketplace_path=marketplace_path,
+                    run_codex=False,
+                    run_claude=True,
+                    sync_dependencies=False,
+                    update=True,
+                )
+
+            self.assertEqual(
+                run.call_args_list,
+                [
+                    call(
+                        [
+                            "claude",
+                            "plugin",
+                            "uninstall",
+                            "turnecho@turnecho",
+                            "--scope",
+                            "user",
+                        ]
+                    ),
+                    call(
+                        [
+                            "claude",
+                            "plugin",
+                            "install",
+                            "turnecho@turnecho",
+                            "--scope",
+                            "user",
+                        ]
+                    ),
+                ],
+            )
+
+    def test_claude_only_install_skips_codex_files(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+            plugin_link = root / "plugins" / "turnecho"
+            marketplace_path = root / "marketplace.json"
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.prepare_installed_runtime",
+                    side_effect=self.prepare_runtime,
+                ),
+                patch("install_local_plugin.run_json_list_command") as run_json_list,
+                patch("install_local_plugin.run_checked_command") as run,
+            ):
+                run_json_list.side_effect = [[], []]
+                install_plugin(
+                    plugin_root,
+                    plugin_link=plugin_link,
+                    marketplace_path=marketplace_path,
+                    command_path=root / "bin" / "turnecho",
+                    runtime_base=root / "runtimes",
+                    run_codex=False,
+                    run_claude=True,
+                    prepare_codex=False,
+                )
+
+            self.assertFalse(plugin_link.exists())
+            self.assertFalse(marketplace_path.exists())
+            self.assertTrue((root / "bin" / "turnecho").is_symlink())
+            self.assertEqual(run.call_count, 2)
+
+    def test_claude_only_update_leaves_codex_manifest_untouched(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+            manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
+            original_manifest = manifest_path.read_bytes()
+
+            with (
+                patch("install_local_plugin.shutil.which", return_value="/bin/tool"),
+                patch(
+                    "install_local_plugin.run_json_list_command",
+                    side_effect=[
+                        [
+                            {
+                                "name": "turnecho",
+                                "source": "directory",
+                                "path": str(plugin_root.resolve()),
+                            }
+                        ],
+                        [{"id": "turnecho@turnecho"}],
+                    ],
+                ),
+                patch("install_local_plugin.run_checked_command") as run,
+            ):
+                install_plugin(
+                    plugin_root,
+                    plugin_link=root / "plugins" / "turnecho",
+                    marketplace_path=root / "marketplace.json",
+                    run_codex=False,
+                    run_claude=True,
+                    prepare_codex=False,
+                    sync_dependencies=False,
+                    update=True,
+                )
+
+            self.assertEqual(manifest_path.read_bytes(), original_manifest)
+            self.assertFalse((root / "plugins" / "turnecho").exists())
+            self.assertFalse((root / "marketplace.json").exists())
+            self.assertEqual(run.call_count, 2)
+
+    def test_dry_run_without_codex_omits_codex_lines(self) -> None:
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin_root = self.create_plugin_root(root)
+            output = io.StringIO()
+
+            with redirect_stdout(output):
+                install_plugin(
+                    plugin_root,
+                    plugin_link=root / "plugins" / "turnecho",
+                    marketplace_path=root / "marketplace.json",
+                    dry_run=True,
+                    run_codex=False,
+                    run_claude=True,
+                    prepare_codex=False,
+                    update=True,
+                )
+
+            report = output.getvalue()
+            self.assertNotIn("Would link", report)
+            self.assertNotIn("Would update marketplace", report)
+            self.assertNotIn("update_plugin_cachebuster", report)
+            self.assertIn("claude plugin install turnecho@turnecho", report)
+
+    def run_main_with_hosts(
+        self,
+        detected_hosts: list[str],
+        **overrides: bool,
+    ) -> tuple[int, dict[str, bool]]:
+        """Run main() with mocked detection and capture its host flags."""
+        options: dict[str, bool] = {
+            "force": False,
+            "dry_run": False,
+            "skip_codex": False,
+            "skip_claude": False,
+            "skip_dependency_sync": True,
+            "update": False,
+        }
+        options.update(overrides)
+        args = argparse.Namespace(**options)
+        with (
+            patch("install_local_plugin.parse_args", return_value=args),
+            patch("install_local_plugin.detect_hosts", return_value=detected_hosts),
+            patch("install_local_plugin.install_plugin") as install,
+        ):
+            exit_code = main()
+        if install.call_count:
+            flags = install.call_args.kwargs
+            return exit_code, {
+                "run_codex": flags["run_codex"],
+                "run_claude": flags["run_claude"],
+                "prepare_codex": flags["prepare_codex"],
+            }
+        return exit_code, {}
+
+    def test_main_installs_into_each_detected_host(self) -> None:
+        exit_code, flags = self.run_main_with_hosts(["codex", "claude_code"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            flags, {"run_codex": True, "run_claude": True, "prepare_codex": True}
+        )
+
+    def test_main_skips_undetected_codex_files(self) -> None:
+        exit_code, flags = self.run_main_with_hosts(["claude_code"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            flags, {"run_codex": False, "run_claude": True, "prepare_codex": False}
+        )
+
+    def test_main_skip_codex_still_prepares_files_for_manual_add(self) -> None:
+        exit_code, flags = self.run_main_with_hosts(
+            ["codex", "claude_code"], skip_codex=True
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            flags, {"run_codex": False, "run_claude": True, "prepare_codex": True}
+        )
+
+    def test_main_errors_when_no_host_detected(self) -> None:
+        exit_code, flags = self.run_main_with_hosts([])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(flags, {})
 
 
 if __name__ == "__main__":

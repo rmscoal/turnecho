@@ -9,9 +9,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from .cli import (
     DEFAULT_COMMAND_PATH,
@@ -36,13 +37,38 @@ from .constant import (
     TURNECHO_RUNTIME_MARKER_FILE,
 )
 from .exc import InstallError
+from .hosts.types import TurnEchoHostSource
 from .runtime_preflight import validate_runtime_dependencies
+
+CODEX_HOST = TurnEchoHostSource.CODEX.value
+CLAUDE_HOST = TurnEchoHostSource.CLAUDE_CODE.value
+
+# Canonical host order for installation, messaging, and rollback.
+HOST_COMMANDS = {CODEX_HOST: "codex", CLAUDE_HOST: "claude"}
+HOST_DISPLAY_NAMES = {CODEX_HOST: "Codex", CLAUDE_HOST: "Claude Code"}
 
 
 def require_command(command_name: str) -> None:
-    """Reject installation before changing Codex when a command is unavailable."""
+    """Reject installation before changing a host when a command is unavailable."""
     if shutil.which(command_name) is None:
         raise InstallError(f"The '{command_name}' command was not found.")
+
+
+def detect_hosts() -> list[str]:
+    """Return the supported hosts whose CLIs are available, in install order."""
+    return [
+        host
+        for host, command in HOST_COMMANDS.items()
+        if shutil.which(command) is not None
+    ]
+
+
+def normalize_hosts(hosts: Sequence[str]) -> list[str]:
+    """Validate explicit hosts and return them in canonical install order."""
+    unknown = [host for host in hosts if host not in HOST_COMMANDS]
+    if unknown:
+        raise InstallError(f"Unsupported TurnEcho host(s): {', '.join(unknown)}.")
+    return [host for host in HOST_COMMANDS if host in hosts]
 
 
 @dataclass(frozen=True)
@@ -85,6 +111,27 @@ def run_json_command(command: list[str]) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         raise InstallError(f"Command did not return a JSON object: {' '.join(command)}")
+
+    return payload
+
+
+def run_json_list_command(command: list[str]) -> list[Any]:
+    """Run a command and require a JSON array response."""
+    completed_process = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        payload: Any = json.loads(completed_process.stdout)
+    except json.JSONDecodeError as error:
+        raise InstallError(
+            f"Command did not return valid JSON: {' '.join(command)}"
+        ) from error
+
+    if not isinstance(payload, list):
+        raise InstallError(f"Command did not return a JSON array: {' '.join(command)}")
 
     return payload
 
@@ -309,6 +356,83 @@ def resolve_plugin_root(
         )
 
     return plugin_root
+
+
+def find_claude_marketplace(entries: list[Any]) -> dict[str, Any] | None:
+    """Find TurnEcho's configured Claude marketplace entry."""
+    for marketplace in entries:
+        if (
+            isinstance(marketplace, dict)
+            and marketplace.get("name") == TURNECHO_MARKETPLACE_NAME
+        ):
+            return marketplace
+
+    return None
+
+
+def validate_claude_marketplace_source(marketplace: dict[str, Any]) -> None:
+    """Reject an existing same-name marketplace that points somewhere else."""
+    if marketplace.get("source") != "github":
+        raise InstallError(
+            f"Marketplace '{TURNECHO_MARKETPLACE_NAME}' does not point to the "
+            "TurnEcho GitHub repository."
+        )
+
+    repo = marketplace.get("repo")
+    if not isinstance(repo, str):
+        raise InstallError(
+            f"Marketplace '{TURNECHO_MARKETPLACE_NAME}' exists, but its source cannot be verified."
+        )
+
+    normalized_repo = repo.removesuffix(".git").rstrip("/")
+    accepted_sources = {
+        TURNECHO_MARKETPLACE_SOURCE,
+        f"https://github.com/{TURNECHO_MARKETPLACE_SOURCE}",
+        f"git@github.com:{TURNECHO_MARKETPLACE_SOURCE}",
+    }
+    if normalized_repo not in accepted_sources:
+        raise InstallError(
+            f"Marketplace '{TURNECHO_MARKETPLACE_NAME}' points to an unexpected source: "
+            f"{repo}"
+        )
+
+
+def find_claude_plugin(entries: list[Any]) -> dict[str, Any] | None:
+    """Find the installed TurnEcho Claude plugin entry."""
+    for plugin in entries:
+        if isinstance(plugin, dict) and plugin.get("id") == TURNECHO_PLUGIN_SELECTOR:
+            return plugin
+
+    return None
+
+
+def resolve_claude_plugin_root(plugin: dict[str, Any]) -> Path:
+    """Resolve and validate the installed Claude plugin path."""
+    installed_path = plugin.get("installPath")
+    if not isinstance(installed_path, str) or not installed_path.strip():
+        raise InstallError("Claude did not report TurnEcho's installed plugin path.")
+
+    plugin_root = Path(installed_path).expanduser().resolve()
+    if not (plugin_root / "pyproject.toml").is_file():
+        raise InstallError(
+            f"TurnEcho's installed source is missing pyproject.toml: {plugin_root}"
+        )
+
+    return plugin_root
+
+
+def resolve_claude_plugin_version(plugin: dict[str, Any]) -> str:
+    """Return the installed Claude plugin version after validating it."""
+    version = plugin.get("version")
+    if version != TURNECHO_PLUGIN_VERSION:
+        raise InstallError(
+            "Claude installed an unexpected TurnEcho release: "
+            f"version={version!r}; expected version={TURNECHO_PLUGIN_VERSION!r}. "
+            "Claude marketplaces track the repository instead of a pinned ref, "
+            "so retry once the released version is published."
+        )
+
+    return version
 
 
 def resolve_runtime_base_directory() -> Path:
@@ -602,19 +726,8 @@ def remove_managed_runtimes(runtime_base: Path) -> int:
     return removed
 
 
-def uninstall_plugin(
-    *,
-    command_path: Path = DEFAULT_COMMAND_PATH,
-    runtime_base: Path | None = None,
-) -> tuple[bool, int]:
-    """Remove Codex state plus only TurnEcho-owned runtime and command files."""
-    require_command("codex")
-    runtime_base = (
-        resolve_runtime_base_directory()
-        if runtime_base is None
-        else runtime_base.expanduser().resolve()
-    )
-
+def _uninstall_codex_host() -> None:
+    """Remove the TurnEcho plugin and marketplace from Codex."""
     plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
     installed_plugin = find_installed_plugin(plugin_payload)
     marketplace_payload = run_json_command(
@@ -631,6 +744,66 @@ def uninstall_plugin(
     if marketplace is not None:
         remove_marketplace()
 
+
+def _uninstall_claude_host() -> None:
+    """Remove the TurnEcho plugin and marketplace from Claude Code."""
+    plugin_entries = run_json_list_command(["claude", "plugin", "list", "--json"])
+    installed_plugin = find_claude_plugin(plugin_entries)
+    marketplace_entries = run_json_list_command(
+        ["claude", "plugin", "marketplace", "list", "--json"]
+    )
+    marketplace = find_claude_marketplace(marketplace_entries)
+    if marketplace is not None:
+        validate_claude_marketplace_source(marketplace)
+
+    if installed_plugin is not None:
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "uninstall",
+                TURNECHO_PLUGIN_SELECTOR,
+                "--scope",
+                "user",
+            ]
+        )
+    if marketplace is not None:
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "marketplace",
+                "remove",
+                TURNECHO_MARKETPLACE_NAME,
+            ]
+        )
+
+
+def uninstall_plugin(
+    *,
+    command_path: Path = DEFAULT_COMMAND_PATH,
+    runtime_base: Path | None = None,
+    hosts: Sequence[str] = (CODEX_HOST,),
+) -> tuple[bool, int]:
+    """Remove host state plus only TurnEcho-owned runtime and command files.
+
+    Hosts without an available CLI are skipped. Shared runtime and command
+    cleanup always runs, even when no host is selected.
+    """
+    runtime_base = (
+        resolve_runtime_base_directory()
+        if runtime_base is None
+        else runtime_base.expanduser().resolve()
+    )
+
+    for host in normalize_hosts(hosts):
+        if shutil.which(HOST_COMMANDS[host]) is None:
+            continue
+        if host == CODEX_HOST:
+            _uninstall_codex_host()
+        else:
+            _uninstall_claude_host()
+
     command_removed = remove_cli_command(
         command_path,
         managed_cache_roots=(runtime_base, _codex_plugin_version_root()),
@@ -639,75 +812,97 @@ def uninstall_plugin(
     return command_removed, runtime_count
 
 
-def install_plugin(
-    *,
-    update: bool = False,
-    command_path: Path = DEFAULT_COMMAND_PATH,
-    runtime_base: Path | None = None,
-) -> Path:
-    """Preflight dependencies, install TurnEcho, and prepare its stable runtime."""
-    require_command("codex")
-    require_command("uv")
+@dataclass
+class CodexHostInstall:
+    """Codex plugin state needed to build the runtime or roll back."""
 
-    # This process is launched by uvx, so imports fail before Codex is changed.
-    try:
-        validate_runtime_dependencies()
-    except Exception as error:
-        raise InstallError(f"Audio runtime preflight failed: {error}") from error
-
-    marketplace_payload = run_json_command(
-        ["codex", "plugin", "marketplace", "list", "--json"]
-    )
-    marketplace = find_marketplace(marketplace_payload)
-    marketplace_added = False
-
-    plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
-    installed_plugin = find_installed_plugin(plugin_payload)
-    installed_path: str | None = None
-    plugin_added = False
-    plugin_install_attempted = False
-    command_link_state: CommandLinkState | None = None
+    plugin_root: Path | None = None
+    version: str | None = None
+    plugin_added: bool = False
+    marketplace_added: bool = False
+    marketplace_replacement_started: bool = False
+    replacement_marketplace_added: bool = False
     previous_marketplace_ref: str | None = None
-    marketplace_replacement_started = False
-    replacement_marketplace_added = False
-    plugin_was_installed = installed_plugin is not None
-    plugin_without_marketplace_update = False
-    runtime_base = (
-        resolve_runtime_base_directory()
-        if runtime_base is None
-        else runtime_base.expanduser().resolve()
-    )
-    runtime_state: RuntimeInstallState | None = None
+    plugin_was_installed: bool = False
+    plugin_install_attempted: bool = False
+    plugin_without_marketplace_update: bool = False
 
+
+@dataclass
+class ClaudeHostInstall:
+    """Claude plugin state needed to build the runtime or roll back."""
+
+    plugin_root: Path | None = None
+    version: str | None = None
+    plugin_added: bool = False
+    marketplace_added: bool = False
+
+
+def _raise_with_rollback_errors(
+    error: Exception, rollback_errors: list[str]
+) -> NoReturn:
+    """Re-raise an installation failure, reporting rollback failures with it."""
+    if rollback_errors:
+        raise InstallError(
+            f"Installation failed: {error}. Rollback also failed: "
+            + "; ".join(rollback_errors)
+        ) from error
+    raise error
+
+
+def _install_codex_host(
+    *,
+    update: bool,
+    command_path: Path,
+    runtime_base: Path,
+) -> CodexHostInstall:
+    """Install or update the TurnEcho Codex plugin and marketplace.
+
+    Partial progress is rolled back before any error propagates, so the
+    orchestrator only ever rolls back completed host states.
+    """
+    state = CodexHostInstall()
     try:
+        marketplace_payload = run_json_command(
+            ["codex", "plugin", "marketplace", "list", "--json"]
+        )
+        marketplace = find_marketplace(marketplace_payload)
+
+        plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
+        installed_plugin = find_installed_plugin(plugin_payload)
+        installed_path: str | None = None
+        state.plugin_was_installed = installed_plugin is not None
+
         if marketplace is None:
             if update and installed_plugin is not None:
-                previous_marketplace_ref = resolve_plugin_source_ref(installed_plugin)
-                if previous_marketplace_ref is None:
+                state.previous_marketplace_ref = resolve_plugin_source_ref(
+                    installed_plugin
+                )
+                if state.previous_marketplace_ref is None:
                     raise InstallError(
                         "Cannot preserve the installed TurnEcho release before update."
                     )
-                plugin_without_marketplace_update = True
+                state.plugin_without_marketplace_update = True
             add_marketplace(TURNECHO_MARKETPLACE_REF)
-            marketplace_added = True
+            state.marketplace_added = True
         else:
             validate_marketplace_source(marketplace)
             if update:
-                previous_marketplace_ref = resolve_previous_marketplace_ref(
+                state.previous_marketplace_ref = resolve_previous_marketplace_ref(
                     marketplace,
                     installed_plugin,
                 )
                 remove_marketplace()
-                marketplace_replacement_started = True
+                state.marketplace_replacement_started = True
                 add_marketplace(TURNECHO_MARKETPLACE_REF)
-                replacement_marketplace_added = True
+                state.replacement_marketplace_added = True
 
         if installed_plugin is None or update:
-            plugin_install_attempted = True
+            state.plugin_install_attempted = True
             install_payload = run_json_command(
                 ["codex", "plugin", "add", TURNECHO_PLUGIN_SELECTOR, "--json"]
             )
-            plugin_added = installed_plugin is None
+            state.plugin_added = installed_plugin is None
             installed_path = resolve_installed_plugin_path(install_payload)
             plugin_payload = run_json_command(["codex", "plugin", "list", "--json"])
             installed_plugin = find_installed_plugin(plugin_payload)
@@ -715,14 +910,237 @@ def install_plugin(
                 raise InstallError("Codex did not report TurnEcho as installed.")
             validate_installed_release(installed_plugin)
 
-        plugin_root = resolve_plugin_root(
+        state.plugin_root = resolve_plugin_root(
             installed_plugin,
             installed_path=installed_path,
         )
-        version = resolve_installed_plugin_version(installed_plugin)
+        state.version = resolve_installed_plugin_version(installed_plugin)
+        return state
+    except Exception as error:
+        rollback_errors = _rollback_codex_host(
+            state,
+            command_path=command_path,
+            runtime_base=runtime_base,
+        )
+        _raise_with_rollback_errors(error, rollback_errors)
+
+
+def _rollback_codex_host(
+    state: CodexHostInstall,
+    *,
+    command_path: Path,
+    runtime_base: Path,
+) -> list[str]:
+    """Remove Codex state created by this run and restore replaced releases."""
+    rollback_errors = rollback_fresh_install(
+        plugin_added=state.plugin_added,
+        marketplace_added=state.marketplace_added,
+    )
+    if state.marketplace_replacement_started:
+        if state.previous_marketplace_ref is None:
+            rollback_errors.append("previous marketplace ref was not preserved")
+        else:
+            rollback_errors.extend(
+                rollback_marketplace_replacement(
+                    previous_ref=state.previous_marketplace_ref,
+                    replacement_added=state.replacement_marketplace_added,
+                    restore_plugin=state.plugin_was_installed
+                    and state.plugin_install_attempted,
+                    command_path=command_path,
+                    runtime_base=runtime_base,
+                )
+            )
+    elif state.plugin_without_marketplace_update and state.plugin_install_attempted:
+        if state.previous_marketplace_ref is None:
+            rollback_errors.append("previous plugin ref was not preserved")
+        else:
+            rollback_errors.extend(
+                rollback_plugin_without_marketplace(
+                    state.previous_marketplace_ref,
+                    command_path,
+                    runtime_base,
+                )
+            )
+    return rollback_errors
+
+
+def _install_claude_host(*, update: bool) -> ClaudeHostInstall:
+    """Install or update the TurnEcho Claude plugin and marketplace.
+
+    Partial progress is rolled back before any error propagates, so the
+    orchestrator only ever rolls back completed host states.
+    """
+    state = ClaudeHostInstall()
+    try:
+        marketplace_entries = run_json_list_command(
+            ["claude", "plugin", "marketplace", "list", "--json"]
+        )
+        marketplace = find_claude_marketplace(marketplace_entries)
+        if marketplace is None:
+            run_checked_command(
+                [
+                    "claude",
+                    "plugin",
+                    "marketplace",
+                    "add",
+                    TURNECHO_MARKETPLACE_SOURCE,
+                    "--scope",
+                    "user",
+                ]
+            )
+            state.marketplace_added = True
+        else:
+            validate_claude_marketplace_source(marketplace)
+            if update:
+                run_checked_command(
+                    [
+                        "claude",
+                        "plugin",
+                        "marketplace",
+                        "update",
+                        TURNECHO_MARKETPLACE_NAME,
+                    ]
+                )
+
+        plugin_entries = run_json_list_command(["claude", "plugin", "list", "--json"])
+        installed_plugin = find_claude_plugin(plugin_entries)
+        if installed_plugin is None:
+            run_checked_command(
+                [
+                    "claude",
+                    "plugin",
+                    "install",
+                    TURNECHO_PLUGIN_SELECTOR,
+                    "--scope",
+                    "user",
+                ]
+            )
+            state.plugin_added = True
+        elif update:
+            run_checked_command(
+                [
+                    "claude",
+                    "plugin",
+                    "update",
+                    TURNECHO_PLUGIN_SELECTOR,
+                    "--scope",
+                    "user",
+                ]
+            )
+        if installed_plugin is None or update:
+            plugin_entries = run_json_list_command(
+                ["claude", "plugin", "list", "--json"]
+            )
+            installed_plugin = find_claude_plugin(plugin_entries)
+            if installed_plugin is None:
+                raise InstallError("Claude did not report TurnEcho as installed.")
+
+        state.version = resolve_claude_plugin_version(installed_plugin)
+        state.plugin_root = resolve_claude_plugin_root(installed_plugin)
+        return state
+    except Exception as error:
+        rollback_errors = _rollback_claude_host(state)
+        _raise_with_rollback_errors(error, rollback_errors)
+
+
+def _rollback_claude_host(state: ClaudeHostInstall) -> list[str]:
+    """Remove Claude state created by this run.
+
+    Updates need no host rollback: nothing is removed, so a failure leaves the
+    previous plugin installed and working while the runtime is restored.
+    """
+    rollback_errors: list[str] = []
+    if state.plugin_added:
+        try:
+            run_checked_command(
+                [
+                    "claude",
+                    "plugin",
+                    "uninstall",
+                    TURNECHO_PLUGIN_SELECTOR,
+                    "--scope",
+                    "user",
+                ]
+            )
+        except Exception as error:
+            rollback_errors.append(f"plugin removal: {error}")
+    if state.marketplace_added:
+        try:
+            run_checked_command(
+                [
+                    "claude",
+                    "plugin",
+                    "marketplace",
+                    "remove",
+                    TURNECHO_MARKETPLACE_NAME,
+                ]
+            )
+        except Exception as error:
+            rollback_errors.append(f"marketplace removal: {error}")
+    return rollback_errors
+
+
+def install_plugin(
+    *,
+    update: bool = False,
+    command_path: Path = DEFAULT_COMMAND_PATH,
+    runtime_base: Path | None = None,
+    hosts: Sequence[str] = (CODEX_HOST,),
+) -> Path:
+    """Preflight dependencies, install TurnEcho, and prepare its stable runtime.
+
+    The default installs into Codex only. Pass explicit hosts (main() passes
+    detect_hosts()) to cover Claude Code as well. Every host's installed
+    version must match this release; any failure rolls every host back so no
+    half-installed state remains.
+    """
+    host_list = normalize_hosts(hosts)
+    if not host_list:
+        raise InstallError(
+            "Neither the 'codex' nor the 'claude' command was found. "
+            "Install Codex or Claude Code, or pass --host to select one explicitly."
+        )
+    require_command("uv")
+    for host in host_list:
+        require_command(HOST_COMMANDS[host])
+
+    # This process is launched by uvx, so imports fail before a host is changed.
+    try:
+        validate_runtime_dependencies()
+    except Exception as error:
+        raise InstallError(f"Audio runtime preflight failed: {error}") from error
+
+    runtime_base = (
+        resolve_runtime_base_directory()
+        if runtime_base is None
+        else runtime_base.expanduser().resolve()
+    )
+    codex_state: CodexHostInstall | None = None
+    claude_state: ClaudeHostInstall | None = None
+    command_link_state: CommandLinkState | None = None
+    runtime_state: RuntimeInstallState | None = None
+
+    try:
+        for host in host_list:
+            if host == CODEX_HOST:
+                codex_state = _install_codex_host(
+                    update=update,
+                    command_path=command_path,
+                    runtime_base=runtime_base,
+                )
+            else:
+                claude_state = _install_claude_host(update=update)
+
+        first_state = codex_state if codex_state is not None else claude_state
+        if (
+            first_state is None
+            or first_state.plugin_root is None
+            or first_state.version is None
+        ):
+            raise InstallError("TurnEcho host installation did not complete.")
         runtime_state = prepare_installed_runtime(
-            plugin_root,
-            version,
+            first_state.plugin_root,
+            first_state.version,
             runtime_base,
         )
         command_link_state = install_cli_command(
@@ -744,43 +1162,20 @@ def install_plugin(
             except Exception as rollback_error:
                 if command_rollback_error is None:
                     command_rollback_error = rollback_error
-        rollback_errors = rollback_fresh_install(
-            plugin_added=plugin_added,
-            marketplace_added=marketplace_added,
-        )
-        if marketplace_replacement_started:
-            if previous_marketplace_ref is None:
-                rollback_errors.append("previous marketplace ref was not preserved")
-            else:
-                rollback_errors.extend(
-                    rollback_marketplace_replacement(
-                        previous_ref=previous_marketplace_ref,
-                        replacement_added=replacement_marketplace_added,
-                        restore_plugin=plugin_was_installed
-                        and plugin_install_attempted,
-                        command_path=command_path,
-                        runtime_base=runtime_base,
-                    )
+        rollback_errors: list[str] = []
+        if claude_state is not None:
+            rollback_errors.extend(_rollback_claude_host(claude_state))
+        if codex_state is not None:
+            rollback_errors.extend(
+                _rollback_codex_host(
+                    codex_state,
+                    command_path=command_path,
+                    runtime_base=runtime_base,
                 )
-        elif plugin_without_marketplace_update and plugin_install_attempted:
-            if previous_marketplace_ref is None:
-                rollback_errors.append("previous plugin ref was not preserved")
-            else:
-                rollback_errors.extend(
-                    rollback_plugin_without_marketplace(
-                        previous_marketplace_ref,
-                        command_path,
-                        runtime_base,
-                    )
-                )
+            )
         if command_rollback_error is not None:
             rollback_errors.insert(0, f"command restoration: {command_rollback_error}")
-        if rollback_errors:
-            raise InstallError(
-                f"Installation failed: {error}. Rollback also failed: "
-                + "; ".join(rollback_errors)
-            ) from error
-        raise
+        _raise_with_rollback_errors(error, rollback_errors)
 
     if runtime_state is None:
         raise InstallError("TurnEcho runtime installation did not complete.")
@@ -797,12 +1192,21 @@ def parse_args() -> argparse.Namespace:
     action.add_argument(
         "--update",
         action="store_true",
-        help="Replace the GitHub marketplace ref and reinstall TurnEcho.",
+        help="Refresh the marketplace release on each host and reinstall TurnEcho.",
     )
     action.add_argument(
         "--uninstall",
         action="store_true",
         help="Remove the GitHub plugin, marketplace, runtime, and managed command.",
+    )
+    parser.add_argument(
+        "--host",
+        choices=[CODEX_HOST, CLAUDE_HOST],
+        default=None,
+        help=(
+            "Install into one host instead of every detected host. "
+            "Cannot be combined with --uninstall."
+        ),
     )
     return parser.parse_args()
 
@@ -810,10 +1214,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Install TurnEcho and report a concise result for terminal users."""
     args = parse_args()
+    if args.uninstall and args.host is not None:
+        print(
+            "TurnEcho installation failed: --host cannot be combined with --uninstall.",
+            file=sys.stderr,
+        )
+        return 2
+    hosts = [args.host] if args.host is not None else detect_hosts()
     try:
         if args.uninstall:
-            command_removed, runtime_count = uninstall_plugin()
-            print("Removed the TurnEcho GitHub plugin and marketplace.")
+            command_removed, runtime_count = uninstall_plugin(hosts=hosts)
+            for host in hosts:
+                print(
+                    f"Removed the TurnEcho plugin and marketplace from "
+                    f"{HOST_DISPLAY_NAMES[host]}."
+                )
+            if not hosts:
+                print("No supported host detected; skipped host plugin removal.")
             print(f"Removed {runtime_count} managed TurnEcho runtime(s).")
             if command_removed:
                 print(f"Removed the TurnEcho command at {DEFAULT_COMMAND_PATH}")
@@ -823,7 +1240,7 @@ def main() -> int:
                     f"TurnEcho-managed link: {DEFAULT_COMMAND_PATH}"
                 )
             return 0
-        plugin_root = install_plugin(update=args.update)
+        plugin_root = install_plugin(update=args.update, hosts=hosts)
     except (
         CommandInstallError,
         InstallError,
@@ -840,8 +1257,12 @@ def main() -> int:
             f"Warning: add {DEFAULT_COMMAND_PATH.parent} to PATH to run 'turnecho'.",
             file=sys.stderr,
         )
-    print("Start a new Codex thread before testing the plugin.")
-    print("If prompted, review and trust the plugin hook with /hooks.")
+    for host in hosts:
+        if host == CODEX_HOST:
+            print("Start a new Codex thread before testing the plugin.")
+            print("If prompted, review and trust the plugin hook with /hooks.")
+        else:
+            print("Start a new Claude Code session before testing the plugin.")
     return 0
 
 

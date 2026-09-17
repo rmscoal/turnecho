@@ -94,9 +94,10 @@ reloads when the configured model changes.
 
 - macOS or Linux
 - Python 3.13 or newer
-- [Codex CLI](https://developers.openai.com/codex/cli)
+- [Codex CLI](https://developers.openai.com/codex/cli) and/or Claude Code. The
+  installer detects which hosts are present and installs into each of them.
 - [uv](https://docs.astral.sh/uv/), available on `PATH` during installation
-  and whenever Codex runs the hooks
+  and whenever a host runs the hooks
 - a working system audio output device
 - network access during installation and the first use of each selected model
 
@@ -120,21 +121,26 @@ uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.0 turnecho-install
 
 This is the recommended installation path because audio dependencies are part
 of the product. It checks the model and audio output before installing the
-plugin and the `turnecho` command.
+plugin and the `turnecho` command. When both Codex and Claude Code are
+installed, TurnEcho is added to both; pass `--host=codex` or
+`--host=claude_code` to install into one host only.
 
-The installer keeps Codex-managed plugin source separate from the generated
+The installer keeps host-managed plugin source separate from the generated
 Python environment. The versioned runtime is stored under
-`~/.local/share/turnecho/runtimes/`. Codex can refresh its plugin cache without
-deleting TurnEcho's dependencies or command target. Hooks execute this runtime
-directly. `uv` is needed during installation and updates, not for each hook.
+`~/.local/share/turnecho/runtimes/`. Either host can refresh its plugin cache
+without deleting TurnEcho's dependencies or command target. Hooks execute this
+runtime directly. `uv` is needed during installation and updates, not for each
+hook.
 
-Do not replace this command with `codex plugin add`. Codex installs the plugin
-source into its cache, but it does not run TurnEcho's dependency preparation or
-create the `turnecho` command. Direct Codex installation is only an internal
-step used by the TurnEcho installer.
+Do not replace this command with `codex plugin add` or `claude plugin
+install`. The hosts install the plugin source into their caches, but they do
+not run TurnEcho's dependency preparation or create the `turnecho` command.
+Direct host installation is only an internal step used by the TurnEcho
+installer.
 
-After installation, start a new Codex thread. If the installer reports that
-`~/.local/bin` is not on `PATH`, add it before running `turnecho`.
+After installation, start a new Codex thread or Claude Code session. If the
+installer reports that `~/.local/bin` is not on `PATH`, add it before running
+`turnecho`.
 
 ### Install a local checkout
 
@@ -144,9 +150,13 @@ For development from a clone, run this command from the repository root:
 uv run --no-dev python scripts/install_local_plugin.py
 ```
 
-Use `--dry-run` to preview the installation or `--skip-codex` to prepare it
-without adding the plugin to Codex. Local and GitHub installations use the same
-versioned runtime layout and managed `turnecho` command.
+Like the GitHub installer, it detects which hosts are installed and adds the
+checkout to each of them automatically.
+
+Use `--dry-run` to preview the installation, or `--skip-codex` and
+`--skip-claude` to prepare it without adding the plugin to that host. Local
+and GitHub installations use the same versioned runtime layout and managed
+`turnecho` command.
 
 ### Manage the installation
 
@@ -158,11 +168,11 @@ To refresh the installed release:
 uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.0 turnecho-install --update
 ```
 
-The update installer replaces the pinned marketplace release, reinstalls the
-plugin, prepares the new stable runtime, and updates the managed command link.
-If an update fails, it attempts to restore and verify the previous plugin
-runtime before returning the original error. If rollback also fails, the
-installer reports both failures.
+The update installer refreshes the marketplace release on each detected host,
+reinstalls the plugin, prepares the new stable runtime, and updates the
+managed command link. If an update fails, it attempts to restore and verify
+the previous plugin runtime before returning the original error. If rollback
+also fails, the installer reports both failures.
 
 Existing Codex tasks can remain bound to the previous plugin snapshot until a
 new task starts. Versioned runtimes are kept so those tasks can finish while
@@ -170,8 +180,8 @@ their old plugin source still exists. If Codex has already removed that source,
 the hook returns empty JSON and does not run another Python project.
 
 Do not update TurnEcho by running `codex plugin remove` followed by
-`codex plugin add`. That recreates the Codex plugin source without preparing
-TurnEcho's runtime or command.
+`codex plugin add`, or the `claude plugin` equivalents. That recreates the
+plugin source without preparing TurnEcho's runtime or command.
 
 #### Repair a GitHub installation
 
@@ -203,20 +213,22 @@ Remove a GitHub installation with the TurnEcho uninstaller:
 uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.0 turnecho-install --uninstall
 ```
 
-This removes the GitHub plugin, its marketplace entry, all marked versioned
-runtimes, and the managed `turnecho` command link. It leaves configuration,
-queue history, logs, unrelated commands, unrelated symlinks, and unmarked
-directories unchanged.
+This removes the GitHub plugin and its marketplace entry from each detected
+host, all marked versioned runtimes, and the managed `turnecho` command link.
+It leaves configuration, queue history, logs, unrelated commands, unrelated
+symlinks, and unmarked directories unchanged.
 
 Raw `codex plugin remove turnecho@turnecho` removes Codex's plugin source only.
 Codex does not run TurnEcho cleanup code, so it cannot remove the external
 runtime or managed command. Run the official uninstaller afterward if the raw
-Codex command was already used.
+Codex command was already used. The same applies to
+`claude plugin uninstall turnecho@turnecho`.
 
 Remove a local-checkout installation with:
 
 ```sh
 codex plugin remove turnecho@personal
+claude plugin uninstall turnecho@turnecho
 ```
 
 The local-checkout installer creates a command link into the managed versioned

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install the current TurnEcho checkout into Codex's personal marketplace."""
+"""Install the current TurnEcho checkout into each detected host."""
 
 from __future__ import annotations
 
@@ -24,13 +24,24 @@ from turnecho.cli import (
     install_cli_command,
     restore_cli_command,
 )
-from turnecho.constant import TURNECHO_PLUGIN_VERSION
+from turnecho.constant import (
+    TURNECHO_MARKETPLACE_NAME,
+    TURNECHO_PLUGIN_SELECTOR,
+    TURNECHO_PLUGIN_VERSION,
+)
 from turnecho.install_plugin import (
+    CLAUDE_HOST,
+    CODEX_HOST,
     RuntimeInstallState,
     commit_runtime_install,
+    detect_hosts,
+    find_claude_marketplace,
+    find_claude_plugin,
     prepare_installed_runtime,
     resolve_runtime_base_directory,
     rollback_runtime_install,
+    run_checked_command,
+    run_json_list_command,
 )
 
 DEFAULT_MARKETPLACE_PATH = Path.home() / ".agents" / "plugins" / "marketplace.json"
@@ -284,6 +295,84 @@ def run_codex_install(plugin_name: str, marketplace_name: str) -> None:
     )
 
 
+def validate_claude_available() -> None:
+    """Check Claude Code before making any local marketplace changes."""
+    if shutil.which("claude") is None:
+        raise InstallError(
+            "The 'claude' command was not found. Re-run this command from a shell "
+            "where Claude Code is installed, or use --skip-claude."
+        )
+
+
+def run_claude_install(plugin_root: Path, *, update: bool) -> None:
+    """Install the checkout as a local Claude plugin."""
+    plugin_root = plugin_root.expanduser().resolve()
+    validate_claude_available()
+
+    marketplaces = run_json_list_command(
+        ["claude", "plugin", "marketplace", "list", "--json"]
+    )
+    marketplace = find_claude_marketplace(marketplaces)
+    if marketplace is None:
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "marketplace",
+                "add",
+                str(plugin_root),
+                "--scope",
+                "user",
+            ]
+        )
+    else:
+        market_path = marketplace.get("path")
+        if (
+            marketplace.get("source") != "directory"
+            or not isinstance(market_path, str)
+            or Path(market_path).expanduser().resolve() != plugin_root
+        ):
+            raise InstallError(
+                f"Claude marketplace '{TURNECHO_MARKETPLACE_NAME}' already exists "
+                "from a different source. Remove it first to install this checkout."
+            )
+
+    plugins = run_json_list_command(["claude", "plugin", "list", "--json"])
+    if find_claude_plugin(plugins) is None:
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "install",
+                TURNECHO_PLUGIN_SELECTOR,
+                "--scope",
+                "user",
+            ]
+        )
+    elif update:
+        # `plugin update` skips unchanged versions, so refresh explicitly.
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "uninstall",
+                TURNECHO_PLUGIN_SELECTOR,
+                "--scope",
+                "user",
+            ]
+        )
+        run_checked_command(
+            [
+                "claude",
+                "plugin",
+                "install",
+                TURNECHO_PLUGIN_SELECTOR,
+                "--scope",
+                "user",
+            ]
+        )
+
+
 def install_plugin(
     plugin_root: Path,
     *,
@@ -292,12 +381,19 @@ def install_plugin(
     force: bool = False,
     dry_run: bool = False,
     run_codex: bool = True,
+    run_claude: bool = False,
+    prepare_codex: bool = True,
     sync_dependencies: bool = True,
     update: bool = False,
     command_path: Path = DEFAULT_COMMAND_PATH,
     runtime_base: Path | None = None,
 ) -> tuple[str, str]:
-    """Install or update a checkout in the personal marketplace and Codex."""
+    """Install or update a checkout in the personal marketplace and each host.
+
+    The symlink, personal-marketplace entry, and Codex cachebuster serve Codex
+    only. Claude installs the checkout directly as a directory marketplace, so
+    a Claude-only run must not create Codex files.
+    """
     plugin_root = plugin_root.expanduser().resolve()
     plugin_name, category = load_plugin_metadata(plugin_root)
     manifest_path = plugin_root / ".codex-plugin" / "plugin.json"
@@ -310,56 +406,78 @@ def install_plugin(
         else runtime_base.expanduser().resolve()
     )
 
+    # Loading is side-effect free; the entry is only prepared when Codex files
+    # are wanted, so detection (not --skip-codex) decides whether they exist.
     marketplace, marketplace_name = load_or_create_marketplace(marketplace_path)
-    marketplace_changed = prepare_marketplace_entry(
-        marketplace,
-        plugin_name,
-        category,
-        force=force,
-    )
-    validate_plugin_link(plugin_link, plugin_root, force=force)
-
-    if update and marketplace_changed:
-        raise InstallError(
-            "--update requires an existing marketplace entry that points to this "
-            "checkout. Run the installer without --update first."
+    marketplace_changed = False
+    if prepare_codex:
+        marketplace_changed = prepare_marketplace_entry(
+            marketplace,
+            plugin_name,
+            category,
+            force=force,
         )
+        validate_plugin_link(plugin_link, plugin_root, force=force)
+
+        if update and marketplace_changed:
+            raise InstallError(
+                "--update requires an existing marketplace entry that points to this "
+                "checkout. Run the installer without --update first."
+            )
 
     if dry_run:
-        print(f"Would link {plugin_link} -> {plugin_root}")
-        if marketplace_changed:
-            print(f"Would update marketplace: {marketplace_path}")
+        if prepare_codex:
+            print(f"Would link {plugin_link} -> {plugin_root}")
+            if marketplace_changed:
+                print(f"Would update marketplace: {marketplace_path}")
         if sync_dependencies:
             print(
                 "Would prepare and verify the TurnEcho runtime at: "
                 f"{runtime_base / TURNECHO_PLUGIN_VERSION}"
             )
             print(f"Would install the TurnEcho command at: {command_path}")
-        if update:
+        if update and prepare_codex:
             print(f"Would run: update_plugin_cachebuster.py {plugin_root}")
         if run_codex:
             print(f"Would run: codex plugin add {plugin_name}@{marketplace_name}")
+        if run_claude:
+            print(
+                f"Would run: claude plugin marketplace add {plugin_root} (if missing)"
+            )
+            print(
+                f"Would run: claude plugin install {TURNECHO_PLUGIN_SELECTOR} "
+                "(if missing)"
+            )
+            if update:
+                print(
+                    "Would refresh the installed Claude plugin "
+                    "(uninstall and reinstall)"
+                )
         return plugin_name, marketplace_name
 
     if run_codex:
         validate_codex_available()
+    if run_claude:
+        validate_claude_available()
 
     original_manifest = manifest_path.read_bytes()
     original_marketplace = (
-        marketplace_path.read_bytes() if marketplace_path.is_file() else None
+        marketplace_path.read_bytes()
+        if prepare_codex and marketplace_path.is_file()
+        else None
     )
     original_link_target = (
-        os.readlink(plugin_link) if plugin_link.is_symlink() else None
+        os.readlink(plugin_link) if prepare_codex and plugin_link.is_symlink() else None
     )
-    link_may_change = not (
+    link_may_change = prepare_codex and not (
         plugin_link.is_symlink() and plugin_link.resolve(strict=False) == plugin_root
     )
-    manifest_may_change = update
+    manifest_may_change = update and prepare_codex
     command_link_state: CommandLinkState | None = None
     runtime_state: RuntimeInstallState | None = None
 
     try:
-        if update:
+        if update and prepare_codex:
             update_plugin_cachebuster(plugin_root)
 
         if sync_dependencies:
@@ -374,12 +492,17 @@ def install_plugin(
                 managed_cache_root=runtime_base,
             )
 
-        ensure_plugin_link(plugin_link, plugin_root, force=force)
-        if marketplace_changed:
-            write_json_atomically(marketplace_path, marketplace)
+        if prepare_codex:
+            ensure_plugin_link(plugin_link, plugin_root, force=force)
+            if marketplace_changed:
+                write_json_atomically(marketplace_path, marketplace)
 
         if run_codex:
             run_codex_install(plugin_name, marketplace_name)
+        if run_claude:
+            # Host steps run last and stay installed when a later step fails;
+            # both are idempotent, so re-running completes the installation.
+            run_claude_install(plugin_root, update=update)
     except Exception as error:
         rollback_errors: list[str] = []
 
@@ -423,8 +546,9 @@ def install_plugin(
     if runtime_state is not None:
         commit_runtime_install(runtime_state)
 
-    print(f"TurnEcho source linked at {plugin_link}")
-    print(f"Marketplace ready at {marketplace_path}")
+    if prepare_codex:
+        print(f"TurnEcho source linked at {plugin_link}")
+        print(f"Marketplace ready at {marketplace_path}")
     if sync_dependencies:
         print(f"TurnEcho command ready at {command_path}")
         if not command_directory_is_on_path(command_path):
@@ -432,21 +556,30 @@ def install_plugin(
                 f"Warning: add {command_path.parent} to PATH to run 'turnecho'.",
                 file=sys.stderr,
             )
-    if update:
+    if update and prepare_codex:
         print("Updated the local plugin cachebuster before reinstalling")
     if run_codex:
         print(f"Installed {plugin_name}@{marketplace_name} in Codex")
         print("Start a new Codex thread before testing the plugin.")
         print("If prompted, review and trust the plugin hook with /hooks.")
+    elif shutil.which("codex") is None:
+        print("Codex was not detected; skipped Codex installation.")
     else:
         print("Codex installation skipped. Run codex plugin add when ready.")
+    if run_claude:
+        print(f"Installed {TURNECHO_PLUGIN_SELECTOR} in Claude Code")
+        print("Start a new Claude Code session before testing the plugin.")
+    elif shutil.which("claude") is None:
+        print("Claude Code was not detected; skipped Claude Code installation.")
+    else:
+        print("Claude Code installation skipped. Re-run without --skip-claude.")
 
     return plugin_name, marketplace_name
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Install this TurnEcho checkout as a local Codex plugin."
+        description="Install this TurnEcho checkout as a local plugin."
     )
     parser.add_argument(
         "--force",
@@ -457,6 +590,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-codex",
         action="store_true",
         help="Prepare the link and marketplace without running the Codex CLI.",
+    )
+    parser.add_argument(
+        "--skip-claude",
+        action="store_true",
+        help="Prepare the link and marketplace without running the Claude CLI.",
     )
     parser.add_argument(
         "--dry-run",
@@ -481,13 +619,34 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     plugin_root = Path(__file__).resolve().parent.parent
+    detected_hosts = detect_hosts()
+    codex_detected = CODEX_HOST in detected_hosts
+    run_codex = codex_detected and not args.skip_codex
+    run_claude = CLAUDE_HOST in detected_hosts and not args.skip_claude
+    if (
+        not run_codex
+        and not run_claude
+        and not args.skip_codex
+        and not args.skip_claude
+        and not args.dry_run
+    ):
+        print(
+            "TurnEcho installation failed: neither the 'codex' nor the 'claude' "
+            "command was found.",
+            file=sys.stderr,
+        )
+        return 1
 
     try:
         install_plugin(
             plugin_root,
             force=args.force,
             dry_run=args.dry_run,
-            run_codex=not args.skip_codex,
+            run_codex=run_codex,
+            run_claude=run_claude,
+            # --skip-codex keeps the documented prepare-files flow for a later
+            # manual `codex plugin add`; only an undetected Codex skips files.
+            prepare_codex=codex_detected,
             sync_dependencies=not args.skip_dependency_sync,
             update=args.update,
         )

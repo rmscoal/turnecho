@@ -55,6 +55,26 @@ class PluginManifestTests(unittest.TestCase):
         self.assertEqual(TURNECHO_PLUGIN_VERSION, version)
         self.assertEqual(TURNECHO_MARKETPLACE_REF, marketplace_ref)
 
+    def test_claude_marketplace_lists_this_plugin_release(self) -> None:
+        marketplace = json.loads(
+            (PROJECT_ROOT / ".claude-plugin" / "marketplace.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        plugin_manifest = json.loads(
+            (PROJECT_ROOT / ".claude-plugin" / "plugin.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        self.assertEqual(marketplace["name"], "turnecho")
+        (entry,) = marketplace["plugins"]
+        self.assertEqual(entry["name"], "turnecho")
+        self.assertEqual(entry["source"], "./")
+        self.assertEqual(entry["version"], TURNECHO_PLUGIN_VERSION)
+        self.assertEqual(marketplace["metadata"]["version"], TURNECHO_PLUGIN_VERSION)
+        self.assertEqual(plugin_manifest["version"], TURNECHO_PLUGIN_VERSION)
+
 
 if __name__ == "__main__":
     unittest.main()
