@@ -5,13 +5,13 @@
   },
   "metadata": {
     "description": "A coding assistant plugin that dares to talk back to you on every turn.",
-    "version": "0.3.1"
+    "version": "0.3.2"
   },
   "plugins": [
     {
       "name": "turnecho",
       "description": "A coding assistant plugin that dares to talk back to you on every turn.",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "author": {
         "name": "Rifky Manuel Satyana"
       },

@@ -1,12 +1,14 @@
 [project]
 name = "turnecho"
-version = "0.3.1"
+version = "0.3.2"
 description = "Codex plugin that reads agent summaries out loud"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "kittentts",
     "sounddevice>=0.5.5",
+    # First release with cp313 wheels; older versions fail to build on 3.13.
+    "curated-tokenizers>=0.0.10",
 ]
 
 [project.scripts]

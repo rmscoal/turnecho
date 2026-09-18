@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2 - 2026-09-18
+
+- Fix `turnecho-install` failing on Python 3.13 by requiring
+  `curated-tokenizers>=0.0.10`, the first release with `cp313` wheels, so the
+  installer no longer attempts a source build that crashes under Cython.
+
 ## 0.3.1 - 2026-09-17
 
 - Detect the installed Codex and Claude Code CLIs and install TurnEcho into

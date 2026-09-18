@@ -116,7 +116,7 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.1 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
@@ -165,7 +165,7 @@ and GitHub installations use the same versioned runtime layout and managed
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.1 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install --update
 ```
 
 The update installer refreshes the marketplace release on each detected host,
@@ -189,7 +189,7 @@ If the current plugin version is still installed but its runtime or
 `turnecho` command is missing, rerun the normal installer without `--update`:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.1 turnecho-install
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install
 ```
 
 This rebuilds the existing release runtime at its permanent path, verifies the
@@ -210,7 +210,7 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 Remove a GitHub installation with the TurnEcho uninstaller:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.1 turnecho-install --uninstall
+uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install --uninstall
 ```
 
 This removes the GitHub plugin and its marketplace entry from each detected
