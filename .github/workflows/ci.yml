@@ -80,15 +80,18 @@ jobs:
     name: Fresh runtime install and hook check
     runs-on: macos-14
     timeout-minutes: 25
-    env:
-      RUNTIME_VENV: ${{ runner.temp }}/turnecho-runtime/.venv
-      FAKE_HOME: ${{ runner.temp }}/turnecho-home
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
+      # The runner context is unavailable in job-level env, so derive the
+      # throwaway paths from $RUNNER_TEMP here for the steps below.
+      - name: Set runtime paths
+        run: |
+          echo "RUNTIME_VENV=$RUNNER_TEMP/turnecho-runtime/.venv" >> "$GITHUB_ENV"
+          echo "FAKE_HOME=$RUNNER_TEMP/turnecho-home" >> "$GITHUB_ENV"
       # The exact sync the installer runs for versioned runtimes (locked,
       # non-editable, audio extra), redirected into a throwaway path.
       # macOS: the Linux torch build pulls multi-GB CUDA wheels, while the
