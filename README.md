@@ -116,12 +116,14 @@ Do not use both methods for the same installation.
 Run the TurnEcho installer directly from GitHub:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install
+uvx --from git+https://github.com/rmscoal/turnecho.git@v1.0.0 turnecho-install
 ```
 
 This is the recommended installation path because audio dependencies are part
-of the product. It checks the model and audio output before installing the
-plugin and the `turnecho` command. When both Codex and Claude Code are
+of the product. The installer itself needs no Python dependencies; it builds
+the versioned audio runtime from the release lockfile and verifies the model
+and audio output inside that runtime before finishing. If verification fails,
+every host change rolls back. When both Codex and Claude Code are
 installed, TurnEcho is added to both; pass `--host=codex` or
 `--host=claude_code` to install into one host only.
 
@@ -165,7 +167,7 @@ and GitHub installations use the same versioned runtime layout and managed
 To refresh the installed release:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install --update
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v1.0.0 turnecho-install --update
 ```
 
 The update installer refreshes the marketplace release on each detected host,
@@ -189,7 +191,7 @@ If the current plugin version is still installed but its runtime or
 `turnecho` command is missing, rerun the normal installer without `--update`:
 
 ```sh
-uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install
+uvx --refresh --from git+https://github.com/rmscoal/turnecho.git@v1.0.0 turnecho-install
 ```
 
 This rebuilds the existing release runtime at its permanent path, verifies the
@@ -210,7 +212,7 @@ uv run --no-dev python scripts/install_local_plugin.py --update
 Remove a GitHub installation with the TurnEcho uninstaller:
 
 ```sh
-uvx --from git+https://github.com/rmscoal/turnecho.git@v0.3.2 turnecho-install --uninstall
+uvx --from git+https://github.com/rmscoal/turnecho.git@v1.0.0 turnecho-install --uninstall
 ```
 
 This removes the GitHub plugin and its marketplace entry from each detected
@@ -335,6 +337,9 @@ Install dependencies:
 uv sync --no-dev
 ```
 
+Unit tests and lint run without the audio dependencies. End-to-end checks
+(`make e2e`) add the `audio` extra automatically.
+
 ### Test the hook manually
 
 If your Codex version does not offer local plugin installation, you can test
@@ -372,6 +377,26 @@ uv run --no-dev python -m unittest discover -s tests
 Source code lives in `src/turnecho/`. Tests use Python's standard `unittest`
 framework and mock TTS and audio output, so the normal test suite does not
 play sound or load the model.
+
+### Test installation changes without a release
+
+The installer path can be exercised from a checkout without cutting a tag:
+
+```sh
+uvx --from . turnecho-install --help
+```
+
+This uses the same ephemeral environment as the GitHub install command, so
+packaging regressions fail here the same way. A real local install builds
+and preflights the same versioned runtime the GitHub installer uses:
+
+```sh
+uv run --no-dev python scripts/install_local_plugin.py --dry-run
+```
+
+CI runs the installer smoke test, plus lint, unit tests, fresh
+audio-extra resolution, and the locked audio runtime install, on every push
+and pull request.
 
 ## License
 

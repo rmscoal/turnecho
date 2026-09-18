@@ -14,7 +14,7 @@ from turnecho import install_plugin
 from turnecho.cli import CommandInstallError
 from turnecho.constant import TURNECHO_MARKETPLACE_MANIFEST_PATH
 
-CURRENT_VERSION = "0.3.2"
+CURRENT_VERSION = "1.0.0"
 CURRENT_REF = f"v{CURRENT_VERSION}"
 
 
@@ -130,15 +130,12 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             "installPath": str(plugin_root),
         }
 
-    def test_fresh_install_preflights_and_syncs_installed_plugin(self) -> None:
+    def test_fresh_install_syncs_installed_plugin(self) -> None:
         with TemporaryDirectory() as directory:
             plugin_root = self.create_installed_plugin(Path(directory))
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(
-                    install_plugin, "validate_runtime_dependencies"
-                ) as preflight,
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -159,7 +156,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             result,
             (plugin_root.parent / "managed-runtimes" / CURRENT_VERSION).resolve(),
         )
-        preflight.assert_called_once_with()
         self.assertEqual(
             run_json.call_args_list[2],
             call(["codex", "plugin", "add", "turnecho@turnecho", "--json"]),
@@ -197,7 +193,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -226,21 +221,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
                     / "turnecho"
                 ).resolve(),
             )
-
-    def test_runtime_preflight_failure_does_not_change_codex(self) -> None:
-        with (
-            patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-            patch.object(
-                install_plugin,
-                "validate_runtime_dependencies",
-                side_effect=ImportError("sounddevice unavailable"),
-            ),
-            patch.object(install_plugin, "run_json_command") as run_json,
-            self.assertRaises(install_plugin.InstallError),
-        ):
-            install_plugin.install_plugin()
-
-        run_json.assert_not_called()
 
     def test_runtime_restore_rejects_an_unexpected_previous_ref(self) -> None:
         with TemporaryDirectory() as directory:
@@ -273,7 +253,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
     def test_missing_install_path_rolls_back_fresh_codex_state(self) -> None:
         with (
             patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-            patch.object(install_plugin, "validate_runtime_dependencies"),
             patch.object(
                 install_plugin,
                 "run_json_command",
@@ -321,7 +300,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -375,7 +353,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -431,7 +408,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
         with (
             patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-            patch.object(install_plugin, "validate_runtime_dependencies"),
             patch.object(
                 install_plugin,
                 "run_json_command",
@@ -468,7 +444,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -541,7 +516,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -639,7 +613,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -739,7 +712,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -811,7 +783,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -946,7 +917,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -999,15 +969,13 @@ class GitHubPluginInstallerTests(unittest.TestCase):
         with self.assertRaisesRegex(install_plugin.InstallError, "bogus"):
             install_plugin.normalize_hosts(["bogus"])
 
-    def test_install_rejects_empty_hosts_before_preflight(self) -> None:
+    def test_install_rejects_empty_hosts_before_host_calls(self) -> None:
         with (
-            patch.object(install_plugin, "validate_runtime_dependencies") as preflight,
             patch.object(install_plugin, "run_json_command") as run_json,
             self.assertRaisesRegex(install_plugin.InstallError, "Neither"),
         ):
             install_plugin.install_plugin(hosts=[])
 
-        preflight.assert_not_called()
         run_json.assert_not_called()
 
     def test_install_requires_each_selected_host_cli(self) -> None:
@@ -1031,9 +999,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
                 patch.object(
-                    install_plugin, "validate_runtime_dependencies"
-                ) as preflight,
-                patch.object(
                     install_plugin,
                     "run_json_list_command",
                     side_effect=[
@@ -1053,7 +1018,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
             result,
             (plugin_root.parent / "managed-runtimes" / CURRENT_VERSION).resolve(),
         )
-        preflight.assert_called_once_with()
         self.assertEqual(
             run.call_args_list,
             [
@@ -1087,7 +1051,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_list_command",
@@ -1136,7 +1099,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_list_command",
@@ -1174,7 +1136,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
     def test_claude_install_rejects_foreign_marketplace_source(self) -> None:
         with (
             patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-            patch.object(install_plugin, "validate_runtime_dependencies"),
             patch.object(
                 install_plugin,
                 "run_json_list_command",
@@ -1201,7 +1162,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -1242,7 +1202,6 @@ class GitHubPluginInstallerTests(unittest.TestCase):
 
             with (
                 patch.object(install_plugin.shutil, "which", return_value="/bin/tool"),
-                patch.object(install_plugin, "validate_runtime_dependencies"),
                 patch.object(
                     install_plugin,
                     "run_json_command",
@@ -1602,7 +1561,19 @@ class RuntimeLifecycleTests(unittest.TestCase):
                 )
                 install_plugin.commit_runtime_install(state)
 
-            self.assertIn("--no-editable", run.call_args_list[0].args[0])
+            self.assertEqual(
+                run.call_args_list[0].args[0],
+                [
+                    "uv",
+                    "sync",
+                    "--project",
+                    str(plugin_root),
+                    "--no-dev",
+                    "--no-editable",
+                    "--extra",
+                    "audio",
+                ],
+            )
             sync_environment = run.call_args_list[0].kwargs["environment"]
             self.assertNotIn("VIRTUAL_ENV", sync_environment)
             sync_environment_path = Path(sync_environment["UV_PROJECT_ENVIRONMENT"])

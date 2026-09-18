@@ -1,4 +1,8 @@
-"""Install TurnEcho from GitHub only after its audio runtime passes preflight."""
+"""Install TurnEcho from GitHub with a preflighted audio runtime.
+
+The installer itself is dependency-free; the audio runtime is verified inside
+the versioned runtime it prepares, rolling every host back on failure.
+"""
 
 from __future__ import annotations
 
@@ -38,7 +42,6 @@ from .constant import (
 )
 from .exc import InstallError
 from .hosts.types import TurnEchoHostSource
-from .runtime_preflight import validate_runtime_dependencies
 
 CODEX_HOST = TurnEchoHostSource.CODEX.value
 CLAUDE_HOST = TurnEchoHostSource.CLAUDE_CODE.value
@@ -506,6 +509,8 @@ def prepare_installed_runtime(
                 str(plugin_root),
                 "--no-dev",
                 "--no-editable",
+                "--extra",
+                "audio",
             ],
             environment=environment,
         )
@@ -1087,7 +1092,7 @@ def install_plugin(
     runtime_base: Path | None = None,
     hosts: Sequence[str] = (CODEX_HOST,),
 ) -> Path:
-    """Preflight dependencies, install TurnEcho, and prepare its stable runtime.
+    """Install TurnEcho and prepare its preflighted stable runtime.
 
     The default installs into Codex only. Pass explicit hosts (main() passes
     detect_hosts()) to cover Claude Code as well. Every host's installed
@@ -1103,12 +1108,6 @@ def install_plugin(
     require_command("uv")
     for host in host_list:
         require_command(HOST_COMMANDS[host])
-
-    # This process is launched by uvx, so imports fail before a host is changed.
-    try:
-        validate_runtime_dependencies()
-    except Exception as error:
-        raise InstallError(f"Audio runtime preflight failed: {error}") from error
 
     runtime_base = (
         resolve_runtime_base_directory()
@@ -1186,7 +1185,7 @@ def install_plugin(
 def parse_args() -> argparse.Namespace:
     """Parse installer options."""
     parser = argparse.ArgumentParser(
-        description="Install TurnEcho with required audio dependency preflight."
+        description="Install TurnEcho with a preflighted audio runtime."
     )
     action = parser.add_mutually_exclusive_group()
     action.add_argument(

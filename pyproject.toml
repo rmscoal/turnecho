@@ -1,14 +1,25 @@
 [project]
 name = "turnecho"
-version = "0.3.2"
+version = "1.0.0"
 description = "Codex plugin that reads agent summaries out loud"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = [
+# No unconditional dependencies: the installer, CLI, hooks, and worker
+# orchestration are stdlib-only so `uvx --from <tag|path>` never resolves
+# the heavy TTS graph. Audio ships in the `audio` extra, installed into
+# versioned runtimes from the committed lockfile.
+dependencies = []
+
+[project.optional-dependencies]
+audio = [
     "kittentts",
     "sounddevice>=0.5.5",
     # First release with cp313 wheels; older versions fail to build on 3.13.
     "curated-tokenizers>=0.0.10",
+    # KittenTTS and misaki require unpinned `spacy`, which otherwise resolves
+    # to 2.0.17 (unbuildable on 3.13) or a 4.0 prerelease (thinc 9). 3.8.7 is
+    # the first 3.8 release with cp313 wheels; <4 keeps the thinc 8 line.
+    "spacy>=3.8.7,<4",
 ]
 
 [project.scripts]

@@ -28,6 +28,9 @@ Current behavior matters when changing code or documentation:
 - The worker processes audio sequentially and exits after an idle timeout.
 - Model, voice, speech speed, and enabled state are configured through the
   local CLI.
+- Audio dependencies (KittenTTS, sounddevice, and their graph) ship in the
+  `audio` extra. The installer, CLI, hooks, and unit tests run without them;
+  only versioned runtimes install the extra from the lockfile.
 - Each queued job snapshots its validated voice and speed.
 - The worker reads the configured model at processing time, so model changes
   apply to jobs that have not started inference.
@@ -46,13 +49,14 @@ implemented behavior.
 - `src/turnecho/hosts/`: per-host payload parsing and output envelopes
   (`codex.py`, `claude.py`) over the shared `types.py` event shape
 - `src/turnecho/summary.py`: host-independent summary marker validation
-- `src/turnecho/install_plugin.py`: preflighted GitHub plugin installer
+- `src/turnecho/install_plugin.py`: dependency-free GitHub plugin installer
+  with a preflighted versioned runtime
 - `src/turnecho/runtime_preflight.py`: TTS model and audio output checks
 - `src/turnecho/sqlite.py`: SQLite schema and queue operations
 - `src/turnecho/worker.py`: process locking, recovery, TTS, and audio playback
 - `src/turnecho/config.py`: dependency-free configuration validation and writes
-- `src/turnecho/cli.py`: deterministic user configuration and runtime checks
-- `src/turnecho/cli_install.py`: managed command-link installation and rollback
+- `src/turnecho/cli.py`: deterministic user configuration, runtime checks,
+  and managed command-link installation and rollback
 - `src/turnecho/migration.py`: transactional packaged migration runner
 - `src/turnecho/migrations/`: numbered SQLite schema migrations
 - `src/turnecho/schema.py`: standard-library queued job model
@@ -67,8 +71,9 @@ implemented behavior.
   work in the hook process.
 - Keep both hook entry points dependency-free so a cold plugin runtime cannot
   delay prompt or Stop handling.
-- Keep normal configuration commands dependency-free. Only explicit runtime
-  checks and audio tests may import model or audio packages.
+- Keep the installer and normal configuration commands dependency-free.
+  Only explicit runtime checks and audio tests may import model or audio
+  packages.
 - Preserve the hook's stdout contract. It must print valid JSON; `Stop` returns
   `{}` so it does not modify the agent response, while `UserPromptSubmit` may
   return its required `additionalContext` object.

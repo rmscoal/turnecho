@@ -11,4 +11,4 @@ check: lint
 
 # E2E_QUIET=1 skips audio playback; by default all summaries play aloud.
 e2e:
-	uv run --no-dev python scripts/e2e_hook_check.py
+	uv run --extra audio --no-dev python scripts/e2e_hook_check.py

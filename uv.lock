@@ -1937,12 +1937,15 @@ wheels = [
 
 [[package]]
 name = "turnecho"
-version = "0.3.2"
+version = "1.0.0"
 source = { editable = "." }
-dependencies = [
+
+[package.optional-dependencies]
+audio = [
     { name = "curated-tokenizers" },
     { name = "kittentts" },
     { name = "sounddevice" },
+    { name = "spacy" },
 ]
 
 [package.dev-dependencies]
@@ -1952,10 +1955,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "curated-tokenizers", specifier = ">=0.0.10" },
-    { name = "kittentts", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
-    { name = "sounddevice", specifier = ">=0.5.5" },
+    { name = "curated-tokenizers", marker = "extra == 'audio'", specifier = ">=0.0.10" },
+    { name = "kittentts", marker = "extra == 'audio'", url = "https://github.com/KittenML/KittenTTS/releases/download/0.8.1/kittentts-0.8.1-py3-none-any.whl" },
+    { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.5.5" },
+    { name = "spacy", marker = "extra == 'audio'", specifier = ">=3.8.7,<4" },
 ]
+provides-extras = ["audio"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.12.0" }]
