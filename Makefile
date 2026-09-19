@@ -1,14 +1,17 @@
-.PHONY: lint format check e2e
+.PHONY: build test vet fmt check
 
-lint:
-	uv run ruff check .
+build:
+	go build ./...
 
-format:
-	uv run ruff format .
+test:
+	go test ./...
 
-check: lint
-	uv run ruff format --check .
+vet:
+	go vet ./...
 
-# E2E_QUIET=1 skips audio playback; by default all summaries play aloud.
-e2e:
-	uv run --extra audio --no-dev python scripts/e2e_hook_check.py
+fmt:
+	gofmt -l .
+
+check: vet
+	test -z "$$(gofmt -l .)"
+	go test ./...

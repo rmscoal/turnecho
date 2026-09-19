@@ -11,184 +11,20 @@ concurrency:
 permissions:
   contents: read
 
-# Python 3.13 only: the locked TTS graph (spacy 3.8.x) has no cp314 wheels,
-# so a 3.14 runtime would fall back to source builds.
-env:
-  PYTHON_VERSION: "3.13"
-
 jobs:
-  checks:
-    name: Lint and unit tests
-    runs-on: ubuntu-24.04
+  build:
+    name: Build, vet, and test
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-go@v5
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      # Lightweight: unit tests and lint run without the audio extra.
-      - run: uv sync --locked
-      - run: uv lock --check
-      - run: make check
-      - run: uv run --no-dev python -m unittest discover -s tests
-
-  installer:
-    name: Tag-less installer smoke test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      # Same ephemeral-env path as `uvx --from git+...@<tag>`, but against
-      # the working tree so installer regressions fail before any release.
-      - run: uvx --from . turnecho-install --help
-      - run: uv build
-      - name: Installer env must not include audio dependencies
-        run: |
-          if uvx --from . python -c "import kittentts"; then
-            echo "kittentts must stay in the audio extra, not the installer env"
-            exit 1
-          fi
-          if uvx --from . python -c "import sounddevice"; then
-            echo "sounddevice must stay in the audio extra, not the installer env"
-            exit 1
-          fi
-
-  fresh-resolution:
-    name: Fresh audio-extra resolution
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      # The runtime installs from uv.lock, but this resolution-only check
-      # fails fast when index drift breaks the audio graph (e.g. an
-      # unbuildable spacy pick), before it can strand a fresh `uv lock`.
-      - run: >
-          uv pip compile pyproject.toml --extra audio
-          --python "${{ env.PYTHON_VERSION }}"
-          --output-file "$RUNNER_TEMP/fresh-audio.txt"
-
-  runtime:
-    name: Fresh runtime install and hook check
-    runs-on: macos-14
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          enable-cache: true
-      # The runner context is unavailable in job-level env, so derive the
-      # throwaway paths from $RUNNER_TEMP here for the steps below.
-      - name: Set runtime paths
-        run: |
-          echo "RUNTIME_VENV=$RUNNER_TEMP/turnecho-runtime/.venv" >> "$GITHUB_ENV"
-          echo "FAKE_HOME=$RUNNER_TEMP/turnecho-home" >> "$GITHUB_ENV"
-      # The exact sync the installer runs for versioned runtimes (locked,
-      # non-editable, audio extra), redirected into a throwaway path.
-      # macOS: the Linux torch build pulls multi-GB CUDA wheels, while the
-      # Ubuntu jobs already cover everything platform-independent.
-      - run: >
-          UV_PROJECT_ENVIRONMENT="$RUNTIME_VENV"
-          uv sync --project . --locked --no-dev --no-editable --extra audio
-      - run: '"$RUNTIME_VENV/bin/turnecho" --version'
-      - run: '"$RUNTIME_VENV/bin/python" -c "import kittentts, sounddevice"'
-      # Both hosts' hooks through the installed runtime copy (no PYTHONPATH,
-      # sandboxed HOME). Payloads carry no summary marker, so nothing queues
-      # and spawned workers exit immediately: no model download, no audio.
-      # Queued-playback acceptance stays a human e2e step (see `make e2e`).
-      - name: Hook contracts through the installed runtime
-        run: |
-          python3 - <<'EOF'
-          import json
-          import os
-          import subprocess
-
-          RUNTIME_PYTHON = os.path.join(os.environ["RUNTIME_VENV"], "bin", "python")
-          FAKE_HOME = os.environ["FAKE_HOME"]
-
-
-          def run_hook(module, payload, args=()):
-              environment = os.environ.copy()
-              environment["HOME"] = FAKE_HOME
-              environment.pop("PYTHONPATH", None)
-              environment.pop("VIRTUAL_ENV", None)
-              completed = subprocess.run(
-                  [RUNTIME_PYTHON, "-m", module, *args],
-                  input=json.dumps(payload),
-                  capture_output=True,
-                  env=environment,
-                  text=True,
-              )
-              assert completed.returncode == 0, (module, completed.stderr)
-              return completed
-
-
-          def check_prompt(label, payload):
-              completed = run_hook("turnecho.prompt_hook", payload)
-              assert completed.stderr == "", (label, completed.stderr)
-              output = json.loads(completed.stdout)
-              specific = output.get("hookSpecificOutput", {})
-              assert specific.get("hookEventName") == "UserPromptSubmit", (
-                  label,
-                  completed.stdout,
-              )
-              assert "turnecho-summary:v1" in specific.get("additionalContext", ""), (
-                  label,
-                  completed.stdout,
-              )
-              print(f"[PASS] {label}")
-
-
-          def check_silent(label, module, payload, args=()):
-              completed = run_hook(module, payload, args)
-              assert completed.stdout == "{}\n", (label, completed.stdout)
-              assert completed.stderr == "", (label, completed.stderr)
-              print(f"[PASS] {label}")
-
-
-          transcript = os.path.join(FAKE_HOME, "transcript.jsonl")
-          os.makedirs(FAKE_HOME, exist_ok=True)
-          with open(transcript, "w", encoding="utf-8") as handle:
-              handle.write('{"type": "user", "message": "hi"}\n')
-              handle.write('{"type": "assistant", "message": "reply"}\n')
-
-          check_prompt("Codex prompt returns the summary instruction", {
-              "hook_event_name": "UserPromptSubmit",
-              "session_id": "ci-codex",
-              "prompt": "Do it.",
-          })
-          check_prompt("Claude prompt returns the summary instruction", {
-              "hook_event_name": "UserPromptSubmit",
-              "session_id": "ci-claude",
-              "transcript_path": transcript,
-              "prompt": "Do it.",
-          })
-          check_silent("Unknown host prompt stays silent", "turnecho.prompt_hook", {
-              "hook_event_name": "UserPromptSubmit",
-              "session_id": "ci-bogus",
-              "prompt": "Do it.",
-          }, args=("--host=bogus",))
-          check_silent("Codex stop stays silent without a marker", "turnecho.stop_hook", {
-              "hook_event_name": "Stop",
-              "session_id": "ci-codex",
-              "turn_id": "ci-turn-1",
-              "stop_hook_active": False,
-              "last_assistant_message": "Done, no summary marker here.",
-          })
-          check_silent("Claude stop stays silent without a marker", "turnecho.stop_hook", {
-              "hook_event_name": "Stop",
-              "session_id": "ci-claude",
-              "transcript_path": transcript,
-              "stop_hook_active": False,
-              "last_assistant_message": "Done, no summary marker here.",
-          })
-          EOF
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: test -z "$(gofmt -l .)"
+      - run: go test ./...

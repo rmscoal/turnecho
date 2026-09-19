@@ -1,5 +1,5 @@
 # Binaries and build output
-turnecho
+/turnecho
 *.exe
 *.test
 *.out
