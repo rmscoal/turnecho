@@ -1,24 +1,17 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-build/
+# Binaries and build output
+turnecho
+*.exe
+*.test
+*.out
 dist/
 
+# Go module cache and tooling
+/vendor/
+
 # Environments
-.venv/
 .env
 .env.*
 !.env.example
-
-# Tooling caches
-.ruff_cache/
-.pytest_cache/
-.mypy_cache/
-.coverage
-coverage.xml
-htmlcov/
-uv/cache/
 
 # Logs
 *.log
