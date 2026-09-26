@@ -8,6 +8,8 @@ builds:
     ignore:
       - goos: linux
         goarch: arm64
+    ldflags:
+      - -X github.com/rmscoal/turnecho/internal/version.Version={{.Version}}
 archives:
   - formats: [tar.gz]
 checksum:

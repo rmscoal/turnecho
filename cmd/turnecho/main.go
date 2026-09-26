@@ -1,11 +1,12 @@
 // Command turnecho is the TurnEcho voice companion for coding agents.
 package main
 
-import "fmt"
+import (
+	"os"
 
-// version is overridden at release time via ldflags.
-var version = "development"
+	"github.com/rmscoal/turnecho/internal/cli"
+)
 
 func main() {
-	fmt.Printf("turnecho %s\n", version)
+	os.Exit(cli.Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }

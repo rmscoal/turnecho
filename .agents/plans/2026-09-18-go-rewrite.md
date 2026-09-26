@@ -56,8 +56,8 @@ External facts verified by inspecting primary sources this run (see Sources):
 3. **sherpa integration: native Go package first, CLI-subprocess fallback.** The primary path calls the sherpa-onnx Go package in-process so the worker keeps one model loaded across jobs and chunks, which is what long-form buddy speech needs. If the Step 4 spike shows the native link/loader setup is too painful to ship reliably, the fallback is shelling out to a sherpa CLI binary per chunk. The spike gate below makes this call with measurements, not opinions.
 4. **Speech pipeline: sentence chunks, sequential playback.** Long answers are split into sentence-ish chunks (bounded length), each chunk is synthesized, and chunks play back to back through an OS-native player. This bounds time-to-first-audio and keeps memory flat regardless of answer length. The queue keeps one job per turn; chunking happens inside the worker, not in the database schema.
 5. **Playback: OS-native player subprocess, no audio library.** macOS uses `afplay` (verified present); Linux probes for a player starting with `aplay` and reports a clear `doctor` error when none is found. No CGo audio dependency, no bundled player binary in v2.
-6. **CLI: Cobra command tree plus a Bubble Tea interactive layer.** Scripting keeps plain subcommands with `--json` output; interactive use gets a guided `turnecho config` flow. One binary, both styles.
-7. **Releases: GoReleaser on tags.** Each tag produces per-platform archives with checksums; the plugin installer (a `turnecho install` subcommand) downloads the pinned sherpa library and Kokoro model tarballs with SHA256 verification into a versioned runtime directory.
+6. **CLI: Cobra command tree plus a Huh interactive layer.** Scripting keeps plain subcommands with `--json` output; interactive use gets a `setup` wizard plus value-less `config set` pickers, all with spoken previews, and a bare-`turnecho` menu on TTYs. Bubble Tea stays reserved for a future live view. Full design in `docs/cli-design.md`.
+7. **Releases and distribution: GoReleaser on tags, install.sh primary, Homebrew tap secondary, self-upgrade.** Each tag produces per-platform archives with checksums. A hand-written `install.sh` downloads the matching asset, verifies checksums, and execs `turnecho install`, which downloads the pinned sherpa library and Kokoro model tarballs with SHA256 verification into a versioned runtime directory. A self-hosted tap installs the binary only and points at `turnecho install`. `turnecho upgrade` self-updates install.sh users and refuses on brew-managed binaries.
 8. **Fresh state, no v1 loader.** Config and database schemas start fresh for v2 with no code that reads v1 files. Same conventional paths may be reused (`~/.config/turnecho/`, `~/.local/share/turnecho/`), and any stale v1 files there are simply ignored or overwritten with a notice.
 
 ## Recommended Approach
@@ -85,7 +85,7 @@ Codex / Claude Code hooks (JSON over stdio)
 |                              aplay probe)        ||
 |                                                  |
 |  config / voices / models / doctor / test / say  |
-|  install / uninstall / TUI wizard                |
+|  install / upgrade / uninstall / setup wizard    |
 +--------------------------------------------------+
         |                    |
   ~/.config/turnecho/   ~/.local/share/turnecho/
@@ -168,8 +168,10 @@ Repository layout for the Go tree:
 ```text
 cmd/turnecho/        main, Cobra root (config, voices, models, enable,
                      disable, doctor, test, say, stop, install,
-                     uninstall, hook, worker)
+                     upgrade, uninstall, setup, hook, worker)
 internal/
+  cli/               command tree, flags, --json printers, exit codes
+  interactive/       Huh wizard, pickers, bare-root menu, TTY guard
   config/            schema load/validate/write (atomic)
   queue/             modernc sqlite, migrations, claim/requeue/update
   hosts/             codex + claude payload parsing, output envelopes
@@ -177,12 +179,15 @@ internal/
   tts/               sherpa backend interface + native impl (+ CLI fallback)
   player/            afplay/aplay probe chain, sequential playback
   worker/            lock, poll loop, chunk pipeline, logging
-  install/           marketplace mgmt, downloads+verify, link, rollback
-  tui/               Bubble Tea config wizard and status views
+  install/           install/upgrade/uninstall, downloads+verify,
+                     marketplace calls, link management, rollback
+  version/           version string and release metadata
 hooks/hooks.json     exec installed binary directly
 configs/voices.yaml  Kokoro speaker id table (pinned per model release)
 .goreleaser.yaml     per-platform archives + checksums
+install.sh           primary installer (downloads release, runs install)
 docs/v1-behavior.md  archived essence of the deleted Python implementation
+docs/cli-design.md   CLI and distribution design (this decision set)
 ```
 
 ## Work Plan
@@ -201,11 +206,11 @@ Step 5, Go core (no TTS yet). Implement config (fresh v2 schema, strict validati
 
 Step 6, speech integration. Implement the chosen sherpa backend (native package or CLI fallback), wire voice-by-speaker-id and speed from config, implement the sentence chunker and sequential player chain (`afplay` on macOS, probed `aplay` first on Linux), and make `doctor` plus `test` exercise the real path. Depends on: Step 5. Produces: end-to-end spoken summaries on macOS.
 
-Step 7, installer and rich CLI. Implement `turnecho install/uninstall` (pinned downloads with SHA256, preflight, marketplace registration, atomic link management, rollback), add the Bubble Tea config wizard and a queue-status view, add shell completion, rewrite `hooks/hooks.json` to call the binary directly, and update the config skill for the new CLI. Depends on: Step 6. Produces: install from a release archive with no Python on the machine.
+Step 7, installer and rich CLI. Implement `turnecho install/uninstall` (pinned downloads with SHA256, preflight, marketplace registration, atomic link management, rollback) and `turnecho upgrade` (release check, verified swap-replace, runtime refresh, brew-managed refusal), add the Huh setup wizard, value-less `config set` pickers with spoken previews, and the bare-root TTY menu per `docs/cli-design.md`, add shell completion, rewrite `hooks/hooks.json` to call the binary directly, and update the config skill for the new CLI. Depends on: Step 6. Produces: install from a release archive with no Python on the machine.
 
 Step 8, buddy mode. Add full-answer speech behind config (`speak: summary|answer`), the Markdown-to-speech sanitizer, chunk-overlap playback, barge-in via `turnecho stop`, and a prompt instruction that asks for speakable structure. Keep summary-marker mode as the default until listening tests pass. Depends on: Step 7. Produces: the peer-programming voice experience.
 
-Step 9, release. Finish `.goreleaser.yaml`, extend CI with per-platform install smoke (assert real wav bytes from `say --output`, never speakers), rewrite `README.md`, `AGENTS.md`, and `CHANGELOG.md` for v2, and cut the v2.0.0 tag with release notes. Depends on: Step 8. Produces: shippable v2.
+Step 9, release. Finish `.goreleaser.yaml` (archives, checksums, tap formula), write `install.sh`, extend CI with per-platform install smoke (assert real wav bytes from `say --output`, never speakers), rewrite `README.md`, `AGENTS.md`, and `CHANGELOG.md` for v2, and cut the v2.0.0 tag with release notes. Depends on: Step 8. Produces: shippable v2.
 
 ## Validation Plan
 
@@ -216,7 +221,7 @@ Step 9, release. Finish `.goreleaser.yaml`, extend CI with per-platform install 
 - Step 4: spike report with measured cold-load, per-chunk synth, and memory numbers on macOS arm64, plus the exact loader setup or a documented fallback decision. Manual listening check of one long paragraph.
 - Step 5: `go test ./...` green; hook contract tests feeding recorded Codex/Claude payloads asserting exact stdout (`{}` or the required envelope) and empty stderr; worker tests for lock contention, atomic claim, and requeue; CLI golden tests for `--json` outputs.
 - Step 6: `turnecho say "phrase" --output out.wav` produces a valid 24kHz wav (byte-asserted, headless-safe); `turnecho test` speaks aloud on a dev machine (manual); `turnecho doctor` fails clearly with the runtime missing and passes with it present.
-- Step 7: from a clean `HOME`, `turnecho install` then `turnecho doctor` passes with no Python involved (assert by hiding `python3` from `PATH`); uninstall removes link and marketplace entries and leaves user data; TUI wizard walked manually once per platform.
+- Step 7: from a clean `HOME`, `turnecho install` then `turnecho doctor` passes with no Python involved (assert by hiding `python3` from `PATH`); uninstall removes link and marketplace entries and leaves user data; setup wizard and pickers walked manually once per platform; `upgrade` refuses on brew-managed paths (unit-tested) and `--check`/`--dry-run` change nothing.
 - Step 8: sanitizer unit tests over Markdown fixtures (code, tables, paths, URLs); long-answer fixture speaks start to finish in order (manual); `turnecho stop` silences within one chunk (manual).
 - Step 9: CI matrix (macOS arm64, Linux x64, plus macOS amd64 if kept) runs unit tests, builds release binaries, and runs the install smoke with wav assertions.
 - Highest-risk validation: the Step 4 spike. If native linking cannot be packaged reliably, the fallback keeps the plan alive but changes latency characteristics, so the gate decision must be explicit and dated.

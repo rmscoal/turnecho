@@ -5,6 +5,9 @@
 *.out
 dist/
 
+# Local scratch (smoke runs, throwaway HOME, manual binaries)
+/.tmp/
+
 # Go module cache and tooling
 /vendor/
 
