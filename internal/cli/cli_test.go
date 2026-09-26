@@ -15,6 +15,7 @@ import (
 	"github.com/rmscoal/turnecho/internal/queue"
 	"github.com/rmscoal/turnecho/internal/speak"
 	"github.com/rmscoal/turnecho/internal/tts"
+	"github.com/rmscoal/turnecho/internal/version"
 	"github.com/rmscoal/turnecho/internal/worker"
 )
 
@@ -384,6 +385,13 @@ func TestHookPrompt(t *testing.T) {
 	if *spawns != 1 {
 		t.Errorf("spawned %d workers, want 1", *spawns)
 	}
+	code, stdout, stderr = run(t, promptPayload(`"session_id":"s1","transcript_path":"/tmp/x"`), "hook", "prompt")
+	if code != ExitOK || stdout != expectedEnvelope(t) || stderr != "" {
+		t.Errorf("valid claude prompt: code=%d out=%q stderr=%q", code, stdout, stderr)
+	}
+	if *spawns != 2 {
+		t.Errorf("spawned %d workers, want 2", *spawns)
+	}
 }
 
 func TestHookPromptVariants(t *testing.T) {
@@ -398,6 +406,9 @@ func TestHookPromptVariants(t *testing.T) {
 	code, stdout, stderr = run(t, "{broken", "hook", "prompt")
 	if code != ExitOK || stdout != "{}\n" || stderr == "" {
 		t.Errorf("broken JSON: code=%d out=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "cannot parse hook input") {
+		t.Errorf("broken JSON stderr = %q", stderr)
 	}
 	// Unknown forced host: default output.
 	code, stdout, _ = run(t, promptPayload(`"session_id":"s1"`), "hook", "prompt", "--host=bogus")
@@ -469,6 +480,10 @@ func TestHookStopVariantsQueueNothing(t *testing.T) {
 	}
 	if *spawns != 0 {
 		t.Errorf("variants spawned %d workers, want 0", *spawns)
+	}
+	_, _, stderr := run(t, "{broken", "hook", "stop")
+	if !strings.Contains(stderr, "cannot parse hook input") {
+		t.Errorf("broken JSON stderr = %q", stderr)
 	}
 }
 
@@ -554,5 +569,16 @@ func TestRootHelps(t *testing.T) {
 	code, _, stderr := run(t, "", "bogus")
 	if code != ExitConfig {
 		t.Errorf("unknown command code=%d, want %d (stderr=%q)", code, ExitConfig, stderr)
+	}
+	code, _, stderr = run(t, "", "say", "--bogus")
+	if code != ExitConfig {
+		t.Errorf("unknown flag code=%d, want %d", code, ExitConfig)
+	}
+	if !strings.Contains(stderr, "unknown flag") {
+		t.Errorf("unknown flag stderr = %q", stderr)
+	}
+	code, stdout, _ = run(t, "", "--version")
+	if code != ExitOK || stdout != "turnecho version "+version.Version+"\n" {
+		t.Errorf("version: code=%d out=%q", code, stdout)
 	}
 }

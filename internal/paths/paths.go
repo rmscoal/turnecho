@@ -30,13 +30,9 @@ const WorkerLogName = "worker.log"
 // PlayerPidName records the active playback process for turnecho stop.
 const PlayerPidName = "player.pid"
 
-func home() (string, error) {
-	return os.UserHomeDir()
-}
-
 // ConfigDir returns ~/.config/turnecho.
 func ConfigDir() (string, error) {
-	home, err := home()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}

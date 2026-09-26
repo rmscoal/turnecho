@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 
 	"github.com/spf13/cobra"
 
 	"github.com/rmscoal/turnecho/internal/config"
 	"github.com/rmscoal/turnecho/internal/hosts"
+	"github.com/rmscoal/turnecho/internal/logging"
 	"github.com/rmscoal/turnecho/internal/paths"
 	"github.com/rmscoal/turnecho/internal/queue"
 	"github.com/rmscoal/turnecho/internal/speak"
@@ -59,15 +61,15 @@ func forcedHost(cmd *cobra.Command) (string, bool) {
 }
 
 // readPayload parses hook stdin, falling back to an empty payload.
-func readPayload(stdin io.Reader, stderr io.Writer) map[string]any {
+func readPayload(stdin io.Reader, logger *slog.Logger) map[string]any {
 	content, err := io.ReadAll(stdin)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot read hook input", "error", err)
 		return nil
 	}
 	var raw any
 	if err := json.Unmarshal(content, &raw); err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot parse hook input", "error", err)
 		return nil
 	}
 	payload, _ := raw.(map[string]any)
@@ -80,7 +82,8 @@ func printDefault(stdout io.Writer) {
 
 // handlePrompt injects the summary instruction for UserPromptSubmit events.
 func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool) {
-	payload := readPayload(stdin, stderr)
+	logger := logging.New(stderr)
+	payload := readPayload(stdin, logger)
 	host := hosts.Detect(payload, forced, hasForced)
 	var isPrompt bool
 	switch host {
@@ -98,7 +101,7 @@ func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasF
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot load config", "error", err)
 		printDefault(stdout)
 		return
 	}
@@ -113,13 +116,14 @@ func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasF
 	}
 	// Warm the worker before the Stop event arrives.
 	if err := spawnWorker(); err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Warn("cannot spawn worker", "error", err)
 	}
 }
 
 // handleStop validates the summary marker and queues one speech job.
 func handleStop(stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool) {
-	payload := readPayload(stdin, stderr)
+	logger := logging.New(stderr)
+	payload := readPayload(stdin, logger)
 	host := hosts.Detect(payload, forced, hasForced)
 	var event hosts.Event
 	var ok bool
@@ -138,7 +142,7 @@ func handleStop(stdin io.Reader, stdout, stderr io.Writer, forced string, hasFor
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot load config", "error", err)
 		printDefault(stdout)
 		return
 	}
@@ -153,25 +157,25 @@ func handleStop(stdin io.Reader, stdout, stderr io.Writer, forced string, hasFor
 	}
 	dbPath, err := paths.Database()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot resolve queue path", "error", err)
 		printDefault(stdout)
 		return
 	}
 	db, err := queue.Open(dbPath)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot open queue", "error", err)
 		printDefault(stdout)
 		return
 	}
 	_, err = db.Insert(event.Host, event.SessionID, event.TurnID, summary, cfg.Voice, cfg.Speed)
 	db.Close()
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Error("cannot queue job", "error", err)
 		printDefault(stdout)
 		return
 	}
 	if err := spawnWorker(); err != nil {
-		fmt.Fprintln(stderr, err)
+		logger.Warn("cannot spawn worker", "error", err)
 	}
 	printDefault(stdout)
 }

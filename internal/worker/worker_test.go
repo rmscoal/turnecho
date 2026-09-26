@@ -11,16 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rmscoal/turnecho/internal/logging"
 	"github.com/rmscoal/turnecho/internal/paths"
 	"github.com/rmscoal/turnecho/internal/queue"
 )
 
-var execCommand = exec.Command
-
 // realGoEnv captures Go directories before tests redirect HOME.
 func realGoEnv(t *testing.T) map[string]string {
 	t.Helper()
-	output, err := execCommand("go", "env", "GOMODCACHE", "GOCACHE", "GOPATH").Output()
+	output, err := exec.Command("go", "env", "GOMODCACHE", "GOCACHE", "GOPATH").Output()
 	if err != nil {
 		t.Fatalf("go env failed: %v", err)
 	}
@@ -91,6 +90,7 @@ func TestHoldLockContention(t *testing.T) {
 
 func TestProcessEmptyQueueSkipsBackend(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv(logging.LevelEnv, "info")
 	db, _ := openQueue(t)
 	backend := &countingBackend{}
 	played := 0
@@ -101,13 +101,16 @@ func TestProcessEmptyQueueSkipsBackend(t *testing.T) {
 		Play:         func(string) error { played++; return nil },
 		PollInterval: time.Millisecond,
 		IdleTimeout:  20 * time.Millisecond,
-		Stderr:       &stderr,
+		Logger:       logging.New(&stderr),
 	})
 	if err != nil {
 		t.Fatalf("process failed: %v", err)
 	}
 	if backend.calls != 0 || played != 0 {
 		t.Errorf("empty queue touched backend (%d) or player (%d)", backend.calls, played)
+	}
+	if stderr.String() != "" {
+		t.Errorf("empty queue logged at info level: %q", stderr.String())
 	}
 }
 
@@ -124,7 +127,7 @@ func TestProcessSpeaksJob(t *testing.T) {
 		Play:         func(path string) error { played = append(played, path); return nil },
 		PollInterval: time.Millisecond,
 		IdleTimeout:  20 * time.Millisecond,
-		Stderr:       &stderr,
+		Logger:       logging.New(&stderr),
 	})
 	if err != nil {
 		t.Fatalf("process failed: %v", err)
@@ -136,8 +139,11 @@ func TestProcessSpeaksJob(t *testing.T) {
 	if status != queue.Success {
 		t.Errorf("status = %q, want success", status)
 	}
-	if stderr.String() != "" {
-		t.Errorf("unexpected stderr: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "job finished") {
+		t.Errorf("missing finish log: %q", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "level=ERROR") {
+		t.Errorf("unexpected error log: %q", stderr.String())
 	}
 }
 
@@ -153,7 +159,7 @@ func TestProcessRecordsFailure(t *testing.T) {
 		Play:         func(string) error { return nil },
 		PollInterval: time.Millisecond,
 		IdleTimeout:  20 * time.Millisecond,
-		Stderr:       &stderr,
+		Logger:       logging.New(&stderr),
 	})
 	if err != nil {
 		t.Fatalf("process failed: %v", err)
@@ -162,8 +168,8 @@ func TestProcessRecordsFailure(t *testing.T) {
 	if status != queue.Failed || !strings.Contains(message, "synth broke") {
 		t.Errorf("status=%q error=%q, want failed with cause", status, message)
 	}
-	if !strings.Contains(stderr.String(), "synth broke") {
-		t.Errorf("stderr missing cause: %q", stderr.String())
+	if !strings.Contains(stderr.String(), "level=ERROR") || !strings.Contains(stderr.String(), "synth broke") {
+		t.Errorf("stderr missing error cause: %q", stderr.String())
 	}
 	if strings.Contains(stderr.String(), "Secret message words.") {
 		t.Errorf("stderr leaked message text: %q", stderr.String())
@@ -187,7 +193,7 @@ func TestProcessRequeuesAbandoned(t *testing.T) {
 		Play:         func(string) error { played++; return nil },
 		PollInterval: time.Millisecond,
 		IdleTimeout:  20 * time.Millisecond,
-		Stderr:       &stderr,
+		Logger:       logging.New(&stderr),
 	})
 	if err != nil {
 		t.Fatalf("process failed: %v", err)
@@ -206,7 +212,7 @@ func TestSpawnedWorkerExitsQuietly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	binary := filepath.Join(t.TempDir(), "turnecho")
-	build := execCommand("go", "build", "-o", binary, "github.com/rmscoal/turnecho/cmd/turnecho")
+	build := exec.Command("go", "build", "-o", binary, "github.com/rmscoal/turnecho/cmd/turnecho")
 	// Keep the inner build on the real module cache: HOME now points at a
 	// temp dir and the cache must neither move there nor be rebuilt.
 	build.Env = append(os.Environ(),

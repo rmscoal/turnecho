@@ -53,6 +53,8 @@ func PlayWith(player, wavPath string) error {
 	if err := command.Start(); err != nil {
 		return err
 	}
+	// One pid file is shared by every player: concurrent playback (worker
+	// plus a manual test) means stop only silences the last one started.
 	// Best effort: a stale pid file only affects turnecho stop.
 	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(command.Process.Pid)), 0o600)
 	waitErr := command.Wait()

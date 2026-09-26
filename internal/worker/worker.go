@@ -3,8 +3,7 @@ package worker
 
 import (
 	"errors"
-	"fmt"
-	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/rmscoal/turnecho/internal/config"
+	"github.com/rmscoal/turnecho/internal/logging"
 	"github.com/rmscoal/turnecho/internal/paths"
 	"github.com/rmscoal/turnecho/internal/player"
 	"github.com/rmscoal/turnecho/internal/queue"
@@ -57,11 +57,16 @@ func HoldLock() (func(), error) {
 				lockFile.Close()
 			}, nil
 		}
-		if time.Now().After(deadline) {
+		if err != unix.EWOULDBLOCK {
+			lockFile.Close()
+			return nil, err
+		}
+		if remaining := time.Until(deadline); remaining <= 0 {
 			lockFile.Close()
 			return nil, ErrAlreadyRunning
+		} else {
+			time.Sleep(min(remaining, PollInterval))
 		}
-		time.Sleep(PollInterval)
 	}
 }
 
@@ -106,7 +111,7 @@ type Dependencies struct {
 	Play         func(wavPath string) error
 	PollInterval time.Duration
 	IdleTimeout  time.Duration
-	Stderr       io.Writer
+	Logger       *slog.Logger
 }
 
 func (d Dependencies) play() func(string) error {
@@ -130,29 +135,36 @@ func (d Dependencies) idleTimeout() time.Duration {
 	return IdleTimeout
 }
 
-func (d Dependencies) stderr() io.Writer {
-	if d.Stderr != nil {
-		return d.Stderr
+func (d Dependencies) logger() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
 	}
-	return os.Stderr
+	return logging.New(os.Stderr)
 }
 
 // Process requeues abandoned jobs and speaks pending work until idle.
 func Process(deps Dependencies) error {
+	logger := deps.logger()
 	release, err := HoldLock()
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	if _, err := deps.Queue.RequeueProcessing(); err != nil {
+	logger.Debug("worker started")
+	moved, err := deps.Queue.RequeueProcessing()
+	if err != nil {
 		return err
+	}
+	if moved > 0 {
+		logger.Info("requeued abandoned jobs", "count", moved)
 	}
 	pending, err := deps.Queue.HasPending()
 	if err != nil {
 		return err
 	}
 	if !pending {
+		logger.Debug("queue empty, exiting")
 		return nil
 	}
 
@@ -164,6 +176,7 @@ func Process(deps Dependencies) error {
 		}
 		if job == nil {
 			if time.Since(lastActivity) >= deps.idleTimeout() {
+				logger.Info("idle timeout reached, exiting")
 				return nil
 			}
 			time.Sleep(deps.pollInterval())
@@ -176,9 +189,11 @@ func Process(deps Dependencies) error {
 
 // speakJob synthesizes and plays one job, always persisting the outcome.
 func speakJob(deps Dependencies, job *queue.Job) {
+	// Never log the message text; it may be sensitive.
+	logger := deps.logger().With("job_id", job.ID, "host", job.Host, "turn_id", job.TurnID)
+	logger.Debug("job claimed")
 	failure := func(err error) {
-		// Never log the message text; it may be sensitive.
-		fmt.Fprintln(deps.stderr(), err)
+		logger.Error("job finished", "status", queue.Failed, "error", err)
 		now := time.Now().Unix()
 		message := err.Error()
 		job.Status = queue.Failed
@@ -187,6 +202,8 @@ func speakJob(deps Dependencies, job *queue.Job) {
 		deps.Queue.Finish(job)
 	}
 
+	// Reload config every job: Step 6 selects the TTS model from it, and a
+	// corrupt file must fail the job instead of speaking with stale state.
 	if _, err := config.Load(); err != nil {
 		failure(err)
 		return
@@ -206,6 +223,7 @@ func speakJob(deps Dependencies, job *queue.Job) {
 		failure(err)
 		return
 	}
+	logger.Info("job finished", "status", queue.Success)
 	now := time.Now().Unix()
 	job.Status = queue.Success
 	job.CompletedAt = &now

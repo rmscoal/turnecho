@@ -105,12 +105,12 @@ func Defaults() Config {
 }
 
 // Validate checks a typed configuration.
-func Validate(config Config) (Config, error) {
-	if config.SchemaVersion != SchemaVersion {
+func Validate(cfg Config) (Config, error) {
+	if cfg.SchemaVersion != SchemaVersion {
 		return Config{}, configError(
-			"Unsupported configuration schema version: %d", config.SchemaVersion)
+			"Unsupported configuration schema version: %d", cfg.SchemaVersion)
 	}
-	if _, ok := Models[config.Model]; !ok {
+	if _, ok := Models[cfg.Model]; !ok {
 		names := make([]string, 0, len(Models))
 		for name := range Models {
 			names = append(names, name)
@@ -118,20 +118,20 @@ func Validate(config Config) (Config, error) {
 		sort.Strings(names)
 		return Config{}, configError(
 			"Unsupported model '%s'. Choose from: %s",
-			config.Model, strings.Join(names, ", "))
+			cfg.Model, strings.Join(names, ", "))
 	}
-	if !slices.Contains(Voices, config.Voice) {
+	if !slices.Contains(Voices, cfg.Voice) {
 		return Config{}, configError(
 			"Unsupported voice '%s'. Choose from: %s",
-			config.Voice, strings.Join(Voices, ", "))
+			cfg.Voice, strings.Join(Voices, ", "))
 	}
-	if math.IsNaN(config.Speed) || math.IsInf(config.Speed, 0) ||
-		config.Speed < MinSpeed || config.Speed > MaxSpeed {
+	if math.IsNaN(cfg.Speed) || math.IsInf(cfg.Speed, 0) ||
+		cfg.Speed < MinSpeed || cfg.Speed > MaxSpeed {
 		return Config{}, configError(
 			"Configuration field 'speed' must be between %g and %g.",
 			MinSpeed, MaxSpeed)
 	}
-	return config, nil
+	return cfg, nil
 }
 
 func fromPayload(payload map[string]any) (Config, error) {

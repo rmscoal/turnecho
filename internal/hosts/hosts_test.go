@@ -89,6 +89,19 @@ func TestIsCodexPromptSubmit(t *testing.T) {
 	}
 }
 
+func TestIsClaudePromptSubmit(t *testing.T) {
+	prompt := map[string]any{"hook_event_name": "UserPromptSubmit", "transcript_path": "/tmp/x"}
+	if !IsClaudePromptSubmit(prompt) {
+		t.Error("prompt payload rejected")
+	}
+	if IsClaudePromptSubmit(map[string]any{"hook_event_name": "Stop"}) {
+		t.Error("stop payload accepted")
+	}
+	if IsClaudePromptSubmit(nil) {
+		t.Error("nil payload accepted")
+	}
+}
+
 func writeTranscript(t *testing.T, lines ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
