@@ -111,3 +111,15 @@ If native loading fails, check that `model.onnx` is the FP32 English v0.19
 model, all companion files were extracted, and the module-cache native
 libraries still exist. Release binaries will need bundled library paths;
 the development module-cache path is not a distribution strategy.
+
+## Queue recovery
+
+The owner checks for new work after model teardown and lock release, including
+work submitted during shutdown. Manual speech also restarts pending jobs after
+releasing ownership. Completion-write errors stop the worker and are reported.
+
+Before starting the first audio chunk, the worker persists a playback intent.
+Recovery requeues jobs that had not reached playback. Jobs with a playback
+intent become failed with an interruption reason, so previously heard audio
+is not repeated. A crash between the intent and playback can therefore lose
+speech. Exactly-once audio delivery cannot be guaranteed across a process crash.

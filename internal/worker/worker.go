@@ -3,6 +3,7 @@ package worker
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -146,12 +147,26 @@ func (d Dependencies) logger() *slog.Logger {
 
 // Process requeues abandoned jobs and speaks pending work until idle.
 func Process(deps Dependencies) error {
-	logger := deps.logger()
-	release, err := HoldLock()
-	if err != nil {
-		return err
+	for {
+		release, err := HoldLock()
+		if err != nil {
+			return err
+		}
+		err = func() error { defer release(); return processOwned(deps) }()
+		if err != nil {
+			return err
+		}
+		// Check after native teardown and unlock. Hooks that lost a lock race
+		// during teardown may already have returned, so this owner drains their work.
+		pending, err := deps.Queue.HasPending()
+		if err != nil || !pending {
+			return err
+		}
 	}
-	defer release()
+}
+
+func processOwned(deps Dependencies) error {
+	logger := deps.logger()
 
 	logger.Debug("worker started")
 	moved, err := deps.Queue.RequeueProcessing()
@@ -159,7 +174,7 @@ func Process(deps Dependencies) error {
 		return err
 	}
 	if moved > 0 {
-		logger.Info("requeued abandoned jobs", "count", moved)
+		logger.Info("recovered abandoned jobs", "count", moved)
 	}
 	pending, err := deps.Queue.HasPending()
 	if err != nil {
@@ -221,67 +236,84 @@ func Process(deps Dependencies) error {
 			time.Sleep(deps.pollInterval())
 			continue
 		}
-		speakJob(deps, job, selectBackend)
+		if err := speakJob(deps, job, selectBackend); err != nil {
+			return err
+		}
 		// Inactivity begins after synthesis and playback finish, not at claim.
 		lastActivity = time.Now()
 	}
 }
 
 // speakJob synthesizes and plays one job, always persisting the outcome.
-func speakJob(deps Dependencies, job *queue.Job, selectBackend func(string) (tts.Backend, error)) {
+func speakJob(deps Dependencies, job *queue.Job, selectBackend func(string) (tts.Backend, error)) error {
 	// Never log the message text; it may be sensitive.
 	logger := deps.logger().With("job_id", job.ID, "host", job.Host, "turn_id", job.TurnID)
 	logger.Debug("job claimed")
-	failure := func(err error) {
-		logger.Error("job finished", "status", queue.Failed, "error", err)
+	finish := func() error {
+		done, err := deps.Queue.Finish(job)
+		if err != nil {
+			return fmt.Errorf("persist job completion: %w", err)
+		}
+		if !done {
+			return errors.New("job disappeared before completion")
+		}
+		if job.Error != nil {
+			logger.Error("job finished", "status", job.Status, "error", *job.Error)
+		} else {
+			logger.Info("job finished", "status", job.Status)
+		}
+		return nil
+	}
+	failure := func(err error) error {
 		now := time.Now().Unix()
 		message := err.Error()
 		job.Status = queue.Failed
 		job.CompletedAt = &now
 		job.Error = &message
-		deps.Queue.Finish(job)
+		return finish()
 	}
 
 	// A corrupt config must fail the job rather than speak with stale state.
 	cfg, err := config.Load()
 	if err != nil {
-		failure(err)
-		return
+		return failure(err)
 	}
 	backend, err := selectBackend(cfg.Model)
 	if err != nil {
-		failure(err)
-		return
+		return failure(err)
 	}
 	chunks := speak.Chunks(job.Message)
 	if len(chunks) == 0 {
-		failure(errors.New("speech text must be nonempty"))
-		return
+		return failure(errors.New("speech text must be nonempty"))
 	}
+	playbackMarked := false
 	for _, chunk := range chunks {
 		samples, err := backend.Synthesize(chunk, job.Voice, job.Speed)
 		if err != nil {
-			failure(err)
-			return
+			return failure(err)
 		}
 		wav, err := writeTempWAV(samples)
 		if err != nil {
-			failure(err)
-			return
+			return failure(err)
+		}
+		if !playbackMarked {
+			if err := deps.Queue.MarkPlayback(job.ID); err != nil {
+				os.Remove(wav)
+				return failure(err)
+			}
+			playbackMarked = true
 		}
 		err = deps.play()(wav)
 		os.Remove(wav)
 		if err != nil {
-			failure(err)
-			return
+			return failure(err)
 		}
 	}
-	logger.Info("job finished", "status", queue.Success)
 	now := time.Now().Unix()
 	job.Status = queue.Success
 	job.CompletedAt = &now
 	job.Error = nil
-	deps.Queue.Finish(job)
+	return finish()
 }
 
 func writeTempWAV(samples []int16) (string, error) {
@@ -299,4 +331,23 @@ func writeTempWAV(samples []int16) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// ResumePending restarts work that arrived while a manual speech command held
+// ownership. Call only after closing the engine and releasing its lock.
+func ResumePending() error {
+	path, err := paths.Database()
+	if err != nil {
+		return err
+	}
+	db, err := queue.Open(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	pending, err := db.HasPending()
+	if err != nil || !pending {
+		return err
+	}
+	return SpawnBackground()
 }

@@ -399,11 +399,11 @@ func (d *DB) HasPending() (bool, error) {
 func (d *DB) RequeueProcessing() (int64, error) {
 	result, err := d.db.Exec(`
 		UPDATE turnecho_jobs
-		SET processing_status = ?,
-			started_at = NULL,
-			completed_at = NULL,
-			error_message = NULL
-		WHERE processing_status = ?`, Pending, Processing)
+		SET processing_status = CASE WHEN playback_started = 1 THEN ? ELSE ? END,
+            started_at = CASE WHEN playback_started = 1 THEN started_at ELSE NULL END,
+            completed_at = CASE WHEN playback_started = 1 THEN ? ELSE NULL END,
+            error_message = CASE WHEN playback_started = 1 THEN 'playback interrupted; automatic replay suppressed' ELSE NULL END
+        WHERE processing_status = ?`, Failed, Pending, time.Now().Unix(), Processing)
 	if err != nil {
 		return 0, err
 	}
@@ -432,4 +432,20 @@ func (d *DB) Finish(job *Job) (bool, error) {
 		return false, err
 	}
 	return affected == 1, nil
+}
+
+// MarkPlayback records a durable intent before the external audio side effect.
+func (d *DB) MarkPlayback(id string) error {
+	result, err := d.db.Exec(`UPDATE turnecho_jobs SET playback_started = 1 WHERE id = ? AND processing_status = ?`, id, Processing)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("job is not owned for playback")
+	}
+	return nil
 }

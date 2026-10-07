@@ -446,3 +446,61 @@ func TestSpawnedWorkerExitsQuietly(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+func TestCompletionWriteFailureDoesNotReplayAudio(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, path := openQueue(t)
+	db.Insert("codex", "s", "one", "Hello.", "speaker-0", 1)
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	_, err = raw.Exec(`CREATE TRIGGER reject_finish BEFORE UPDATE OF completed_at ON turnecho_jobs WHEN NEW.completed_at IS NOT NULL BEGIN SELECT RAISE(FAIL, 'completion unavailable'); END`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plays := 0
+	deps := Dependencies{Queue: db, Backend: &countingBackend{}, Play: func(string) error { plays++; return nil }, IdleTimeout: time.Millisecond, PollInterval: time.Millisecond}
+	if err := Process(deps); err == nil {
+		t.Error("completion error hidden")
+	}
+	raw.Exec(`DROP TRIGGER reject_finish`)
+	if err := Process(deps); err != nil {
+		t.Fatal(err)
+	}
+	if plays != 1 {
+		t.Fatalf("audio played %d times", plays)
+	}
+	if status, _ := jobState(t, path, "one"); status != queue.Failed {
+		t.Fatalf("status=%s", status)
+	}
+}
+
+type closingEngine struct {
+	recordingEngine
+	onClose func()
+}
+
+func (e *closingEngine) Close() { e.recordingEngine.Close(); e.onClose() }
+
+func TestJobArrivingDuringShutdownIsProcessed(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, path := openQueue(t)
+	db.Insert("codex", "s", "one", "Hello.", "speaker-0", 1)
+	engine := &closingEngine{onClose: func() {}}
+	engine.onClose = func() {
+		if engine.closes == 1 {
+			if _, err := db.Insert("codex", "s", "two", "New work.", "speaker-0", 1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	err := Process(Dependencies{Queue: db, OpenBackend: func(string) (tts.Engine, error) { return engine, nil }, Play: func(string) error { return nil }, IdleTimeout: time.Millisecond, PollInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := jobState(t, path, "two"); status != queue.Success {
+		t.Fatalf("new job left %s", status)
+	}
+}

@@ -169,6 +169,7 @@ func openOwnedBackend(model string) (tts.Engine, error) {
 	engine, err := openBackend(model)
 	if err != nil {
 		release()
+		_ = worker.ResumePending()
 		return nil, err
 	}
 	return &ownedEngine{Engine: engine, release: release}, nil
@@ -184,5 +185,8 @@ func (e *ownedEngine) Close() {
 		e.Engine.Close()
 		e.release()
 		e.release = nil
+		if err := worker.ResumePending(); err != nil {
+			fmt.Fprintf(os.Stderr, "turnecho: resume queued speech: %v\n", err)
+		}
 	}
 }
