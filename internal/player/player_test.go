@@ -186,3 +186,15 @@ func TestConcurrentPlaybackIsRejected(t *testing.T) {
 		t.Error("socket retained")
 	}
 }
+
+func TestStopAfterPlayerExitDoesNotRetainControl(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for i := 0; i < 10; i++ {
+		if err := PlayWith("/usr/bin/true", "ignored.wav"); err != nil {
+			t.Fatal(err)
+		}
+		if stopped, err := Stop(); err != nil || stopped {
+			t.Fatalf("stop=%v error=%v", stopped, err)
+		}
+	}
+}

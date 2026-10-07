@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -113,9 +112,8 @@ func playWithTimeout(player, wavPath string, timeout time.Duration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, player, wavPath)
-	// Kill the player group as well, so a wrapper cannot leave a child behind.
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	command.Cancel = func() error { return unix.Kill(-command.Process.Pid, unix.SIGKILL) }
+	// Use os/exec's default cancellation, which signals the owned os.Process
+	// and guards against signalling a reused PID after the child is reaped.
 	if err := command.Start(); err != nil {
 		return err
 	}

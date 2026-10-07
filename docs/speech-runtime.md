@@ -156,7 +156,7 @@ speech. Exactly-once audio delivery cannot be guaranteed across a process crash.
 
 Playback has a deadline of the WAV duration plus 30 seconds, capped at ten
 minutes (five minutes if the header cannot be read). A timeout or `stop`
-cancels and reaps the owned player process group. Playback is serialized by
+cancels and reaps the owned player process. Playback is serialized by
 its own lock. `stop` uses a private local Unix socket and never signals a PID
 read from disk. Legacy `player.pid` files are ignored.
 
