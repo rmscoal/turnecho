@@ -81,7 +81,8 @@ func pcm16(samples []float32) ([]int16, error) {
 		if math.IsNaN(value) || math.IsInf(value, 0) {
 			return nil, fmt.Errorf("Kokoro produced non-finite audio")
 		}
-		pcm[i] = int16(math.Round(max(-32768, min(32767, value*32768))))
+		// Clamp to the int16 range before converting.
+		pcm[i] = int16(math.Round(max(math.MinInt16, min(math.MaxInt16, value*32768))))
 	}
 	return pcm, nil
 }

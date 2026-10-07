@@ -63,12 +63,12 @@ func HoldLock() (func(), error) {
 			lockFile.Close()
 			return nil, err
 		}
-		if remaining := time.Until(deadline); remaining <= 0 {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
 			lockFile.Close()
 			return nil, ErrAlreadyRunning
-		} else {
-			time.Sleep(min(remaining, PollInterval))
 		}
+		time.Sleep(min(remaining, PollInterval))
 	}
 }
 
@@ -186,36 +186,16 @@ func processOwned(deps Dependencies) error {
 	}
 
 	// Keep one model warm across jobs, but never load it for an empty queue.
-	var engine tts.Engine
-	var currentModel string
-	defer func() {
-		if engine != nil {
-			engine.Close()
-		}
-	}()
-	selectBackend := func(model string) (tts.Backend, error) {
-		if deps.Backend != nil {
-			return deps.Backend, nil
-		}
-		if engine != nil && currentModel == model {
-			return engine, nil
-		}
-		open := deps.OpenBackend
-		if open == nil {
-			open = tts.Open
-		}
-		if engine != nil {
-			engine.Close()
-			engine = nil
-			currentModel = ""
-		}
-		replacement, err := open(model)
-		if err != nil {
-			return nil, err
-		}
-		engine, currentModel = replacement, model
-		logger.Debug("model loaded", "model", model)
-		return engine, nil
+	open := deps.OpenBackend
+	if open == nil {
+		open = tts.Open
+	}
+	cache := &modelCache{open: open, logger: logger}
+	defer cache.close()
+
+	selectBackend := cache.backend
+	if deps.Backend != nil {
+		selectBackend = func(string) (tts.Backend, error) { return deps.Backend, nil }
 	}
 
 	lastActivity := time.Now()
@@ -226,7 +206,7 @@ func processOwned(deps Dependencies) error {
 		}
 		if job == nil {
 			// Nothing to keep warm after a missing-runtime/load failure.
-			if engine == nil && deps.Backend == nil {
+			if !cache.loaded() && deps.Backend == nil {
 				return nil
 			}
 			if time.Since(lastActivity) >= deps.idleTimeout() {
@@ -244,12 +224,51 @@ func processOwned(deps Dependencies) error {
 	}
 }
 
+// modelCache keeps one TTS model warm across jobs.
+type modelCache struct {
+	open   func(model string) (tts.Engine, error)
+	logger *slog.Logger
+
+	engine tts.Engine
+	model  string
+}
+
+// backend returns the cached engine for a model, loading it on demand.
+func (c *modelCache) backend(model string) (tts.Backend, error) {
+	if c.engine != nil && c.model == model {
+		return c.engine, nil
+	}
+	c.close()
+
+	replacement, err := c.open(model)
+	if err != nil {
+		return nil, err
+	}
+	c.engine, c.model = replacement, model
+	c.logger.Debug("model loaded", "model", model)
+	return c.engine, nil
+}
+
+func (c *modelCache) close() {
+	if c.engine != nil {
+		c.engine.Close()
+		c.engine = nil
+		c.model = ""
+	}
+}
+
+// loaded reports whether a model is currently cached.
+func (c *modelCache) loaded() bool {
+	return c.engine != nil
+}
+
 // speakJob synthesizes and plays one job, always persisting the outcome.
 func speakJob(deps Dependencies, job *queue.Job, selectBackend func(string) (tts.Backend, error)) error {
 	// Never log the message text; it may be sensitive.
 	logger := deps.logger().With("job_id", job.ID, "host", job.Host, "turn_id", job.TurnID)
 	logger.Debug("job claimed")
-	finish := func() error {
+
+	persistOutcome := func() error {
 		done, err := deps.Queue.Finish(job)
 		if err != nil {
 			return fmt.Errorf("persist job completion: %w", err)
@@ -264,73 +283,58 @@ func speakJob(deps Dependencies, job *queue.Job, selectBackend func(string) (tts
 		}
 		return nil
 	}
-	failure := func(err error) error {
+	failJob := func(err error) error {
 		now := time.Now().Unix()
 		message := err.Error()
 		job.Status = queue.Failed
 		job.CompletedAt = &now
 		job.Error = &message
-		return finish()
+		return persistOutcome()
 	}
 
 	// A corrupt config must fail the job rather than speak with stale state.
 	cfg, err := config.Load()
 	if err != nil {
-		return failure(err)
+		return failJob(err)
 	}
 	backend, err := selectBackend(cfg.Model)
 	if err != nil {
-		return failure(err)
+		return failJob(err)
 	}
 	chunks := speak.Chunks(job.Message)
 	if len(chunks) == 0 {
-		return failure(errors.New("speech text must be nonempty"))
+		return failJob(errors.New("speech text must be nonempty"))
 	}
+
 	playbackMarked := false
 	for _, chunk := range chunks {
 		samples, err := backend.Synthesize(chunk, job.Voice, job.Speed)
 		if err != nil {
-			return failure(err)
+			return failJob(err)
 		}
-		wav, err := writeTempWAV(samples)
+		wav, err := tts.WriteTempWAV(samples)
 		if err != nil {
-			return failure(err)
+			return failJob(err)
 		}
 		if !playbackMarked {
 			if err := deps.Queue.MarkPlayback(job.ID); err != nil {
 				os.Remove(wav)
-				return failure(err)
+				return failJob(err)
 			}
 			playbackMarked = true
 		}
 		err = deps.play()(wav)
 		os.Remove(wav)
 		if err != nil {
-			return failure(err)
+			return failJob(err)
 		}
 	}
+
 	now := time.Now().Unix()
 	job.Status = queue.Success
 	job.CompletedAt = &now
 	job.Error = nil
-	return finish()
-}
-
-func writeTempWAV(samples []int16) (string, error) {
-	temporary, err := os.CreateTemp("", "turnecho-*.wav")
-	if err != nil {
-		return "", err
-	}
-	path := temporary.Name()
-	if err := temporary.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	if err := tts.WriteWAV(path, samples); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
+	return persistOutcome()
 }
 
 // ResumePending restarts work that arrived while a manual speech command held

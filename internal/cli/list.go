@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -46,12 +45,7 @@ func newModelsCommand() *cobra.Command {
 					Models  map[string]string `json:"models"`
 				}{Default: config.DefaultModel, Models: config.Models})
 			}
-			names := make([]string, 0, len(config.Models))
-			for name := range config.Models {
-				names = append(names, name)
-			}
-			sort.Strings(names)
-			for _, name := range names {
+			for _, name := range config.ModelNames() {
 				suffix := ""
 				if name == config.DefaultModel {
 					suffix = " (default)"

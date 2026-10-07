@@ -35,12 +35,21 @@ func Detect(payload map[string]any, forcedHost string, hasForced bool) string {
 	if hasForced {
 		return forcedHost
 	}
-	if payload != nil {
-		if _, ok := payload["transcript_path"]; ok {
-			return ClaudeCode
-		}
+	// Indexing a nil map is safe and reports the key as missing.
+	if _, ok := payload["transcript_path"]; ok {
+		return ClaudeCode
 	}
 	return Codex
+}
+
+// promptOutput is the additional-context envelope both hosts accept.
+type promptOutput struct {
+	HookSpecificOutput hookSpecificOutput `json:"hookSpecificOutput"`
+}
+
+type hookSpecificOutput struct {
+	HookEventName     string `json:"hookEventName"`
+	AdditionalContext string `json:"additionalContext"`
 }
 
 // PromptEnvelope renders the additional-context envelope both hosts accept.
@@ -48,18 +57,41 @@ func PromptEnvelope(eventName, instruction string) string {
 	var buffer bytes.Buffer
 	encoder := json.NewEncoder(&buffer)
 	encoder.SetEscapeHTML(false)
-	encoder.Encode(struct {
-		HookSpecificOutput struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		} `json:"hookSpecificOutput"`
-	}{
-		HookSpecificOutput: struct {
-			HookEventName     string `json:"hookEventName"`
-			AdditionalContext string `json:"additionalContext"`
-		}{HookEventName: eventName, AdditionalContext: instruction},
+	encoder.Encode(promptOutput{
+		HookSpecificOutput: hookSpecificOutput{
+			HookEventName:     eventName,
+			AdditionalContext: instruction,
+		},
 	})
 	return strings.TrimSuffix(buffer.String(), "\n")
+}
+
+// stopFields carries the fields every Stop payload must provide.
+type stopFields struct {
+	sessionID string
+	message   string
+}
+
+// parseStopFields rejects unusable Stop payloads before host-specific parsing.
+func parseStopFields(payload map[string]any, eventName string) (stopFields, bool) {
+	if payload == nil {
+		return stopFields{}, false
+	}
+	if payload["hook_event_name"] != eventName {
+		return stopFields{}, false
+	}
+	sessionID, ok := nonBlankString(payload, "session_id")
+	if !ok {
+		return stopFields{}, false
+	}
+	message, ok := nonBlankString(payload, "last_assistant_message")
+	if !ok {
+		return stopFields{}, false
+	}
+	if isActive(payload) {
+		return stopFields{}, false
+	}
+	return stopFields{sessionID: sessionID, message: message}, true
 }
 
 func nonBlankString(payload map[string]any, key string) (string, bool) {

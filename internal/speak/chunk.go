@@ -33,14 +33,17 @@ func Chunks(text string) []string {
 			word = string(runes)
 			n = len(runes)
 		}
+
 		if len(words) > 0 && length+1+n > ChunkChars {
 			flush()
 		}
+
 		if len(words) > 0 {
 			length++
 		}
 		words = append(words, word)
 		length += n
+
 		if sentenceEnd(word) {
 			flush()
 		}

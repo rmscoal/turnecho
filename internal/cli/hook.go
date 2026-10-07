@@ -87,33 +87,53 @@ func printDefault(stdout io.Writer) {
 	fmt.Fprintln(stdout, hosts.DefaultOutput)
 }
 
-// handlePrompt injects the summary instruction for UserPromptSubmit events.
-func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool) {
+// readHookInput parses stdin and detects the host, printing the fail-safe
+// default output when the host is unknown.
+func readHookInput(
+	stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool,
+) (map[string]any, string, *slog.Logger, bool) {
 	logger := logging.New(stderr)
 	payload := readPayload(stdin, logger)
-	host := hosts.Detect(payload, forced, hasForced)
-	var isPrompt bool
-	switch host {
-	case hosts.ClaudeCode:
-		isPrompt = hosts.IsClaudePromptSubmit(payload)
-	case hosts.Codex:
-		isPrompt = hosts.IsCodexPromptSubmit(payload)
+	switch host := hosts.Detect(payload, forced, hasForced); host {
+	case hosts.ClaudeCode, hosts.Codex:
+		return payload, host, logger, true
 	default:
 		printDefault(stdout)
-		return
+		return nil, "", logger, false
 	}
-	if !isPrompt {
-		printDefault(stdout)
-		return
-	}
+}
+
+// loadHookConfig loads the configuration, printing the fail-safe default
+// output when it is unreadable or speech is disabled.
+func loadHookConfig(stdout io.Writer, logger *slog.Logger) (config.Config, bool) {
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Error("cannot load config", "error", err)
 		printDefault(stdout)
-		return
+		return config.Config{}, false
 	}
 	if !cfg.Enabled {
 		printDefault(stdout)
+		return config.Config{}, false
+	}
+	return cfg, true
+}
+
+// handlePrompt injects the summary instruction for UserPromptSubmit events.
+func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool) {
+	payload, host, logger, ok := readHookInput(stdin, stdout, stderr, forced, hasForced)
+	if !ok {
+		return
+	}
+	isPromptSubmit := hosts.IsCodexPromptSubmit
+	if host == hosts.ClaudeCode {
+		isPromptSubmit = hosts.IsClaudePromptSubmit
+	}
+	if !isPromptSubmit(payload) {
+		printDefault(stdout)
+		return
+	}
+	if _, ok := loadHookConfig(stdout, logger); !ok {
 		return
 	}
 	if host == hosts.ClaudeCode {
@@ -129,32 +149,21 @@ func handlePrompt(stdin io.Reader, stdout, stderr io.Writer, forced string, hasF
 
 // handleStop validates the summary marker and queues one speech job.
 func handleStop(stdin io.Reader, stdout, stderr io.Writer, forced string, hasForced bool) {
-	logger := logging.New(stderr)
-	payload := readPayload(stdin, logger)
-	host := hosts.Detect(payload, forced, hasForced)
-	var event hosts.Event
-	var ok bool
-	switch host {
-	case hosts.ClaudeCode:
-		event, ok = hosts.ParseClaudeStop(payload)
-	case hosts.Codex:
-		event, ok = hosts.ParseCodexStop(payload)
-	default:
-		printDefault(stdout)
+	payload, host, logger, ok := readHookInput(stdin, stdout, stderr, forced, hasForced)
+	if !ok {
 		return
 	}
+	parseStop := hosts.ParseCodexStop
+	if host == hosts.ClaudeCode {
+		parseStop = hosts.ParseClaudeStop
+	}
+	event, ok := parseStop(payload)
 	if !ok {
 		printDefault(stdout)
 		return
 	}
-	cfg, err := config.Load()
-	if err != nil {
-		logger.Error("cannot load config", "error", err)
-		printDefault(stdout)
-		return
-	}
-	if !cfg.Enabled {
-		printDefault(stdout)
+	cfg, ok := loadHookConfig(stdout, logger)
+	if !ok {
 		return
 	}
 	summary, valid := speak.ExtractSummary(event.Message)

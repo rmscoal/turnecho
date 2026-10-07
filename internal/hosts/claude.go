@@ -20,13 +20,29 @@ const ClaudePromptSubmitEventName = "UserPromptSubmit"
 // TranscriptTailBytes bounds the transcript read so Stop handling stays fast.
 const TranscriptTailBytes = 65536
 
-func countAssistantTurns(transcriptPath string) (int, bool) {
-	tail, ok := readTranscriptTail(transcriptPath)
-	if !ok {
-		return 0, false
+// transcriptStats counts assistant turns in the tail window and reports the
+// total file size, opening the transcript once so Stop handling stays fast.
+func transcriptStats(transcriptPath string) (count int, size int64, ok bool) {
+	if strings.TrimSpace(transcriptPath) == "" {
+		return 0, 0, false
 	}
-	count := 0
-	for line := range strings.Lines(tail) {
+	handle, err := os.Open(expandUser(transcriptPath))
+	if err != nil {
+		return 0, 0, false
+	}
+	defer handle.Close()
+
+	info, err := handle.Stat()
+	if err != nil {
+		return 0, 0, false
+	}
+	offset := max(info.Size()-TranscriptTailBytes, 0)
+	tail := make([]byte, info.Size()-offset)
+	if _, err := handle.ReadAt(tail, offset); err != nil {
+		return 0, 0, false
+	}
+
+	for line := range strings.Lines(string(tail)) {
 		if !strings.HasPrefix(strings.TrimLeftFunc(line, unicode.IsSpace), "{") {
 			continue
 		}
@@ -38,7 +54,7 @@ func countAssistantTurns(transcriptPath string) (int, bool) {
 			count++
 		}
 	}
-	return count, true
+	return count, info.Size(), true
 }
 
 func expandUser(path string) string {
@@ -48,38 +64,6 @@ func expandUser(path string) string {
 		}
 	}
 	return path
-}
-
-func readTranscriptTail(transcriptPath string) (string, bool) {
-	if strings.TrimSpace(transcriptPath) == "" {
-		return "", false
-	}
-	handle, err := os.Open(expandUser(transcriptPath))
-	if err != nil {
-		return "", false
-	}
-	defer handle.Close()
-	info, err := handle.Stat()
-	if err != nil {
-		return "", false
-	}
-	offset := max(info.Size()-TranscriptTailBytes, 0)
-	tail := make([]byte, info.Size()-offset)
-	if _, err := handle.ReadAt(tail, offset); err != nil {
-		return "", false
-	}
-	return string(tail), true
-}
-
-func transcriptSize(transcriptPath string) (int64, bool) {
-	if strings.TrimSpace(transcriptPath) == "" {
-		return 0, false
-	}
-	info, err := os.Stat(expandUser(transcriptPath))
-	if err != nil {
-		return 0, false
-	}
-	return info.Size(), true
 }
 
 func randomSuffix() string {
@@ -100,9 +84,8 @@ func randomSuffix() string {
 func DeriveTurnID(transcriptPath, message string) string {
 	hash := sha1.Sum([]byte(message))
 	digest := hex.EncodeToString(hash[:])[:12]
-	count, countOK := countAssistantTurns(transcriptPath)
-	size, sizeOK := transcriptSize(transcriptPath)
-	if !countOK || !sizeOK {
+	count, size, ok := transcriptStats(transcriptPath)
+	if !ok {
 		return "turn-" + randomSuffix() + "-" + digest
 	}
 	return "turn-" + strconv.Itoa(count) + "-" + strconv.FormatInt(size, 10) + "-" + digest
@@ -110,29 +93,16 @@ func DeriveTurnID(transcriptPath, message string) string {
 
 // ParseClaudeStop normalizes a Claude Code Stop payload, returning false when unusable.
 func ParseClaudeStop(payload map[string]any) (Event, bool) {
-	if payload == nil {
-		return Event{}, false
-	}
-	if payload["hook_event_name"] != ClaudeStopEventName {
-		return Event{}, false
-	}
-	sessionID, ok := nonBlankString(payload, "session_id")
+	fields, ok := parseStopFields(payload, ClaudeStopEventName)
 	if !ok {
-		return Event{}, false
-	}
-	message, ok := nonBlankString(payload, "last_assistant_message")
-	if !ok {
-		return Event{}, false
-	}
-	if isActive(payload) {
 		return Event{}, false
 	}
 	transcriptPath, _ := payload["transcript_path"].(string)
 	return Event{
 		Host:      ClaudeCode,
-		SessionID: sessionID,
-		TurnID:    DeriveTurnID(transcriptPath, message),
-		Message:   message,
+		SessionID: fields.sessionID,
+		TurnID:    DeriveTurnID(transcriptPath, fields.message),
+		Message:   fields.message,
 	}, true
 }
 

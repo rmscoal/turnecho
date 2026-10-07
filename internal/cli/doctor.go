@@ -57,12 +57,8 @@ func newDoctorCommand() *cobra.Command {
 				return commandError(err)
 			}
 			defer engine.Close()
-			samples, err := engine.Synthesize(TestPhrase, cfg.Voice, cfg.Speed)
-			if err != nil {
+			if err := probeSpeech(engine, cfg); err != nil {
 				return commandError(err)
-			}
-			if len(samples) == 0 {
-				return commandError(fmt.Errorf("TTS runtime produced no audio"))
 			}
 			if asJSON {
 				return printJSON(cmd.OutOrStdout(), doctorReport{
@@ -82,4 +78,16 @@ func newDoctorCommand() *cobra.Command {
 	}
 	command.Flags().BoolVar(&asJSON, "json", false, "Print machine-readable JSON.")
 	return command
+}
+
+// probeSpeech checks that the runtime turns the test phrase into audio.
+func probeSpeech(engine tts.Engine, cfg config.Config) error {
+	samples, err := engine.Synthesize(TestPhrase, cfg.Voice, cfg.Speed)
+	if err != nil {
+		return err
+	}
+	if len(samples) == 0 {
+		return fmt.Errorf("TTS runtime produced no audio")
+	}
+	return nil
 }

@@ -42,14 +42,17 @@ func ExtractSummary(message string) (string, bool) {
 	if !strings.HasSuffix(normalized, CloseMarker) {
 		return "", false
 	}
+
 	start := strings.LastIndex(normalized, OpenMarker)
 	if start == -1 {
 		return "", false
 	}
+
 	raw := normalized[start+len(OpenMarker) : len(normalized)-len(CloseMarker)]
 	if strings.Contains(raw, "<!--") || strings.Contains(raw, "-->") {
 		return "", false
 	}
+
 	summary := strings.Join(strings.Fields(raw), " ")
 	if summary == "" {
 		return "", false

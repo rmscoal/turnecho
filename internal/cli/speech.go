@@ -119,7 +119,7 @@ func speakText(text string, cfg config.Config) error {
 		if err != nil {
 			return err
 		}
-		wav, err := writeSpokenWAV(samples)
+		wav, err := tts.WriteTempWAV(samples)
 		if err != nil {
 			return err
 		}
@@ -130,23 +130,6 @@ func speakText(text string, cfg config.Config) error {
 		}
 	}
 	return nil
-}
-
-func writeSpokenWAV(samples []int16) (string, error) {
-	temporary, err := os.CreateTemp("", "turnecho-*.wav")
-	if err != nil {
-		return "", err
-	}
-	path := temporary.Name()
-	if err := temporary.Close(); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	if err := tts.WriteWAV(path, samples); err != nil {
-		os.Remove(path)
-		return "", err
-	}
-	return path, nil
 }
 
 // openOwnedBackend refuses manual speech while another process owns a model.

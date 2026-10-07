@@ -106,6 +106,25 @@ func WriteWAV(path string, samples []int16) error {
 	return errors.Join(err, writer.Close())
 }
 
+// WriteTempWAV stores samples in a temporary WAV file for playback,
+// returning its path. Callers remove the file when finished.
+func WriteTempWAV(samples []int16) (string, error) {
+	temporary, err := os.CreateTemp("", "turnecho-*.wav")
+	if err != nil {
+		return "", err
+	}
+	path := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	if err := WriteWAV(path, samples); err != nil {
+		os.Remove(path)
+		return "", err
+	}
+	return path, nil
+}
+
 func writePCM(writer io.Writer, samples []int16) error {
 	var buffer [32768]byte
 	for len(samples) > 0 {

@@ -8,6 +8,8 @@ import (
 	"runtime"
 
 	sherpa "github.com/k2-fsa/sherpa-onnx-go/sherpa_onnx"
+
+	"github.com/rmscoal/turnecho/internal/config"
 )
 
 type kokoro struct {
@@ -42,9 +44,9 @@ func Open(model string) (Engine, error) {
 		return nil, fmt.Errorf("cannot load Kokoro model at %s", dir)
 	}
 	engine := &kokoro{model: native}
-	if native.SampleRate() != SampleRate || native.NumSpeakers() != 11 {
+	if native.SampleRate() != SampleRate || native.NumSpeakers() != len(config.Voices) {
 		engine.Close()
-		return nil, fmt.Errorf("Kokoro runtime must provide 11 speakers at %d Hz", SampleRate)
+		return nil, fmt.Errorf("Kokoro runtime must provide %d speakers at %d Hz", len(config.Voices), SampleRate)
 	}
 	return engine, nil
 }

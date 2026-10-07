@@ -28,6 +28,16 @@ var Models = map[string]string{
 	"kokoro": "kokoro-en-v0_19",
 }
 
+// ModelNames lists the supported models in sorted order.
+func ModelNames() []string {
+	names := make([]string, 0, len(Models))
+	for name := range Models {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // DefaultModel is used when no configuration file exists.
 const DefaultModel = "kokoro"
 
@@ -111,14 +121,9 @@ func Validate(cfg Config) (Config, error) {
 			"Unsupported configuration schema version: %d", cfg.SchemaVersion)
 	}
 	if _, ok := Models[cfg.Model]; !ok {
-		names := make([]string, 0, len(Models))
-		for name := range Models {
-			names = append(names, name)
-		}
-		sort.Strings(names)
 		return Config{}, configError(
 			"Unsupported model '%s'. Choose from: %s",
-			cfg.Model, strings.Join(names, ", "))
+			cfg.Model, strings.Join(ModelNames(), ", "))
 	}
 	if !slices.Contains(Voices, cfg.Voice) {
 		return Config{}, configError(
@@ -136,6 +141,7 @@ func Validate(cfg Config) (Config, error) {
 
 func fromPayload(payload map[string]any) (Config, error) {
 	known := []string{"schema_version", "enabled", "model", "voice", "speed"}
+
 	var unknown []string
 	for key := range payload {
 		if !slices.Contains(known, key) {
@@ -146,6 +152,7 @@ func fromPayload(payload map[string]any) (Config, error) {
 		sort.Strings(unknown)
 		return Config{}, configError("Unknown configuration field(s): %s", strings.Join(unknown, ", "))
 	}
+
 	var missing []string
 	for _, key := range known {
 		if _, ok := payload[key]; !ok {
@@ -156,34 +163,67 @@ func fromPayload(payload map[string]any) (Config, error) {
 		return Config{}, configError("Missing configuration field(s): %s", strings.Join(missing, ", "))
 	}
 
-	version, ok := payload["schema_version"].(float64)
-	if !ok || version != math.Trunc(version) {
-		return Config{}, configError("Configuration field 'schema_version' must be an integer.")
+	version, err := payloadInt(payload, "schema_version")
+	if err != nil {
+		return Config{}, err
 	}
-	enabled, ok := payload["enabled"].(bool)
-	if !ok {
-		return Config{}, configError("Configuration field 'enabled' must be a boolean.")
+	enabled, err := payloadBool(payload, "enabled")
+	if err != nil {
+		return Config{}, err
 	}
-	model, ok := payload["model"].(string)
-	if !ok {
-		return Config{}, configError("Configuration field 'model' must be a string.")
+	model, err := payloadString(payload, "model")
+	if err != nil {
+		return Config{}, err
 	}
-	voice, ok := payload["voice"].(string)
-	if !ok {
-		return Config{}, configError("Configuration field 'voice' must be a string.")
+	voice, err := payloadString(payload, "voice")
+	if err != nil {
+		return Config{}, err
 	}
-	speed, ok := payload["speed"].(float64)
-	if !ok {
-		return Config{}, configError("Configuration field 'speed' must be a number.")
+	speed, err := payloadNumber(payload, "speed")
+	if err != nil {
+		return Config{}, err
 	}
 
 	return Validate(Config{
 		Enabled:       enabled,
 		Model:         model,
-		SchemaVersion: int(version),
+		SchemaVersion: version,
 		Speed:         speed,
 		Voice:         voice,
 	})
+}
+
+// payloadInt reads an integer field decoded from JSON (always a float64).
+func payloadInt(payload map[string]any, key string) (int, error) {
+	value, ok := payload[key].(float64)
+	if !ok || value != math.Trunc(value) {
+		return 0, configError("Configuration field '%s' must be an integer.", key)
+	}
+	return int(value), nil
+}
+
+func payloadBool(payload map[string]any, key string) (bool, error) {
+	value, ok := payload[key].(bool)
+	if !ok {
+		return false, configError("Configuration field '%s' must be a boolean.", key)
+	}
+	return value, nil
+}
+
+func payloadString(payload map[string]any, key string) (string, error) {
+	value, ok := payload[key].(string)
+	if !ok {
+		return "", configError("Configuration field '%s' must be a string.", key)
+	}
+	return value, nil
+}
+
+func payloadNumber(payload map[string]any, key string) (float64, error) {
+	value, ok := payload[key].(float64)
+	if !ok {
+		return 0, configError("Configuration field '%s' must be a number.", key)
+	}
+	return value, nil
 }
 
 // DefaultPath returns the configuration file path.
@@ -244,27 +284,39 @@ func writeUnvalidated(config Config, configPath string) error {
 	if err := encoder.Encode(config); err != nil {
 		return err
 	}
+	return writeFileAtomic(configPath, buffer.Bytes())
+}
+
+// writeFileAtomic persists data through a temp file, so a crash never leaves
+// a half-written configuration behind.
+func writeFileAtomic(configPath string, data []byte) error {
 	temporary, err := os.CreateTemp(filepath.Dir(configPath), ".config.json.")
 	if err != nil {
 		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
+
+	closed := false
+	defer func() {
+		if !closed {
+			temporary.Close()
+		}
+	}()
+
 	if err := os.Chmod(temporaryPath, 0o600); err != nil {
-		temporary.Close()
 		return err
 	}
-	if _, err := temporary.Write(buffer.Bytes()); err != nil {
-		temporary.Close()
+	if _, err := temporary.Write(data); err != nil {
 		return err
 	}
 	if err := temporary.Sync(); err != nil {
-		temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
+	closed = true
 	return os.Rename(temporaryPath, configPath)
 }
 
@@ -342,17 +394,7 @@ func ResetFile(path, key string) (Config, error) {
 			if err != nil {
 				return err
 			}
-			defaults := Defaults()
-			switch key {
-			case "enabled":
-				current.Enabled = defaults.Enabled
-			case "model":
-				current.Model = defaults.Model
-			case "voice":
-				current.Voice = defaults.Voice
-			case "speed":
-				current.Speed = defaults.Speed
-			}
+			resetKey(&current, key, Defaults())
 			updated = current
 		}
 		return writeUnvalidated(updated, path)
@@ -361,4 +403,18 @@ func ResetFile(path, key string) (Config, error) {
 		return Config{}, err
 	}
 	return updated, nil
+}
+
+// resetKey restores one setting to its default value.
+func resetKey(current *Config, key string, defaults Config) {
+	switch key {
+	case "enabled":
+		current.Enabled = defaults.Enabled
+	case "model":
+		current.Model = defaults.Model
+	case "voice":
+		current.Voice = defaults.Voice
+	case "speed":
+		current.Speed = defaults.Speed
+	}
 }

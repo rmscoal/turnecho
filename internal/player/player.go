@@ -54,61 +54,53 @@ func PlayWith(player, wavPath string) error {
 	return playWithTimeout(player, wavPath, playbackTimeout(wavPath))
 }
 
+const (
+	// fallbackTimeout caps playback when the WAV header is unreadable.
+	fallbackTimeout = 5 * time.Minute
+	// playbackGracePeriod extends the deadline past the audio length.
+	playbackGracePeriod = 30 * time.Second
+	// maxPlaybackTimeout caps playback of long audio.
+	maxPlaybackTimeout = 10 * time.Minute
+)
+
+// Control protocol messages between turnecho stop and the playback owner.
+const (
+	controlStop = "stop"
+	controlOK   = "ok"
+)
+
 func playbackTimeout(path string) time.Duration {
 	file, err := os.Open(path)
 	if err != nil {
-		return 5 * time.Minute
+		return fallbackTimeout
 	}
 	defer file.Close()
+
 	var header [44]byte
 	if _, err := io.ReadFull(file, header[:]); err != nil {
-		return 5 * time.Minute
+		return fallbackTimeout
 	}
 	rate := binary.LittleEndian.Uint32(header[28:32])
 	if string(header[:4]) != "RIFF" || string(header[36:40]) != "data" || rate == 0 {
-		return 5 * time.Minute
+		return fallbackTimeout
 	}
 	duration := time.Duration(binary.LittleEndian.Uint32(header[40:44])) * time.Second / time.Duration(rate)
-	return min(duration+30*time.Second, 10*time.Minute)
+	return min(duration+playbackGracePeriod, maxPlaybackTimeout)
 }
 
 func playWithTimeout(player, wavPath string, timeout time.Duration) error {
-	dir, err := paths.ConfigDir()
+	unlock, err := holdPlayerLock()
 	if err != nil {
 		return err
 	}
-	if err := paths.EnsurePrivateDir(dir); err != nil {
-		return err
-	}
-	lock, err := paths.OpenPrivateFile(filepath.Join(dir, "player.lock"), os.O_CREATE|os.O_RDWR)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return fmt.Errorf("playback already active: %w", err)
-	}
-	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
-	socket, err := controlSocket()
-	if err != nil {
-		return err
-	}
-	socketDir := filepath.Dir(socket)
-	if err := paths.EnsurePrivateDir(socketDir); err != nil {
-		return err
-	}
-	// Only the lock owner may remove an abandoned socket.
-	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	defer unlock()
+
+	listener, err := listenControlSocket()
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	if err := os.Chmod(socket, 0600); err != nil {
-		return err
-	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, player, wavPath)
@@ -117,30 +109,85 @@ func playWithTimeout(player, wavPath string, timeout time.Duration) error {
 	if err := command.Start(); err != nil {
 		return err
 	}
-	controlled := make(chan struct{})
+
+	done := serveControl(listener, cancel)
+	err = command.Wait()
+	listener.Close()
+	<-done
+	if ctx.Err() != nil {
+		return fmt.Errorf("playback cancelled or timed out: %w", ctx.Err())
+	}
+	return err
+}
+
+// holdPlayerLock takes the cross-process playback lock, refusing a second
+// concurrent playback.
+func holdPlayerLock() (func(), error) {
+	dir, err := paths.ConfigDir()
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.EnsurePrivateDir(dir); err != nil {
+		return nil, err
+	}
+	lock, err := paths.OpenPrivateFile(filepath.Join(dir, "player.lock"), os.O_CREATE|os.O_RDWR)
+	if err != nil {
+		return nil, err
+	}
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("playback already active: %w", err)
+	}
+	return func() {
+		unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+		lock.Close()
+	}, nil
+}
+
+// listenControlSocket binds the stop-request socket owned by this playback.
+func listenControlSocket() (*net.UnixListener, error) {
+	socket, err := controlSocket()
+	if err != nil {
+		return nil, err
+	}
+	if err := paths.EnsurePrivateDir(filepath.Dir(socket)); err != nil {
+		return nil, err
+	}
+	// Only the lock owner may remove an abandoned socket.
+	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(socket, 0600); err != nil {
+		listener.Close()
+		return nil, err
+	}
+	return listener, nil
+}
+
+// serveControl answers stop requests until the listener closes, then closes done.
+func serveControl(listener *net.UnixListener, cancel context.CancelFunc) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
-		defer close(controlled)
+		defer close(done)
 		for {
 			conn, err := listener.AcceptUnix()
 			if err != nil {
 				return
 			}
 			conn.SetDeadline(time.Now().Add(time.Second))
-			var request [4]byte
-			if _, err := io.ReadFull(conn, request[:]); err == nil && string(request[:]) == "stop" {
+			var request [len(controlStop)]byte
+			if _, err := io.ReadFull(conn, request[:]); err == nil && string(request[:]) == controlStop {
 				cancel()
-				conn.Write([]byte("ok"))
+				conn.Write([]byte(controlOK))
 			}
 			conn.Close()
 		}
 	}()
-	err = command.Wait()
-	listener.Close()
-	<-controlled
-	if ctx.Err() != nil {
-		return fmt.Errorf("playback cancelled or timed out: %w", ctx.Err())
-	}
-	return err
+	return done
 }
 
 // Stop asks the playback owner to cancel its own child. A PID file is never
@@ -159,14 +206,14 @@ func Stop() (bool, error) {
 	}
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(time.Second))
-	if _, err := conn.Write([]byte("stop")); err != nil {
+	if _, err := conn.Write([]byte(controlStop)); err != nil {
 		return false, err
 	}
-	var response [2]byte
+	var response [len(controlOK)]byte
 	if _, err := io.ReadFull(conn, response[:]); err != nil {
 		return false, err
 	}
-	return string(response[:]) == "ok", nil
+	return string(response[:]) == controlOK, nil
 }
 
 // Unix socket addresses are limited to about 100 bytes. Hash the configuration

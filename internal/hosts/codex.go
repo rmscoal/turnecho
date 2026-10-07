@@ -8,13 +8,7 @@ const PromptSubmitEventName = "UserPromptSubmit"
 
 // ParseCodexStop normalizes a Codex Stop payload, returning false when unusable.
 func ParseCodexStop(payload map[string]any) (Event, bool) {
-	if payload == nil {
-		return Event{}, false
-	}
-	if payload["hook_event_name"] != StopEventName {
-		return Event{}, false
-	}
-	sessionID, ok := nonBlankString(payload, "session_id")
+	fields, ok := parseStopFields(payload, StopEventName)
 	if !ok {
 		return Event{}, false
 	}
@@ -22,14 +16,7 @@ func ParseCodexStop(payload map[string]any) (Event, bool) {
 	if !ok {
 		return Event{}, false
 	}
-	message, ok := nonBlankString(payload, "last_assistant_message")
-	if !ok {
-		return Event{}, false
-	}
-	if isActive(payload) {
-		return Event{}, false
-	}
-	return Event{Host: Codex, SessionID: sessionID, TurnID: turnID, Message: message}, true
+	return Event{Host: Codex, SessionID: fields.sessionID, TurnID: turnID, Message: fields.message}, true
 }
 
 // IsCodexPromptSubmit reports whether the payload is a Codex UserPromptSubmit event.

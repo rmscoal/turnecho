@@ -34,6 +34,16 @@ func mapConfigError(err error) *ExitError {
 	return commandError(err)
 }
 
+// updateAndPrint applies a configuration change and prints the result.
+func updateAndPrint(cmd *cobra.Command, change func(*config.Config)) error {
+	updated, err := config.Update(change)
+	if err != nil {
+		return mapConfigError(err)
+	}
+	printConfig(cmd.OutOrStdout(), updated)
+	return nil
+}
+
 func newConfigCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:   "config",
@@ -107,27 +117,17 @@ func newConfigSetCommand() *cobra.Command {
 				if parseErr != nil {
 					return configErrorf("Speed must be a number.")
 				}
-				updated, err := config.Update(func(current *config.Config) {
+				return updateAndPrint(cmd, func(current *config.Config) {
 					current.Speed = speed
 				})
-				if err != nil {
-					return mapConfigError(err)
-				}
-				printConfig(cmd.OutOrStdout(), updated)
-				return nil
 			}
-			updated, err := config.Update(func(current *config.Config) {
+			return updateAndPrint(cmd, func(current *config.Config) {
 				if key == "model" {
 					current.Model = value
 				} else {
 					current.Voice = value
 				}
 			})
-			if err != nil {
-				return mapConfigError(err)
-			}
-			printConfig(cmd.OutOrStdout(), updated)
-			return nil
 		},
 	}
 }

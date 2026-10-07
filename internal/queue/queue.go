@@ -27,6 +27,9 @@ import (
 //go:embed migrations/*.sql
 var migrationFiles embed.FS
 
+// Status is a job processing state stored in the queue.
+type Status string
+
 // Job statuses.
 const (
 	Pending    = "pending"
@@ -57,7 +60,7 @@ type Job struct {
 	Message     string
 	Voice       string
 	Speed       float64
-	Status      string
+	Status      Status
 	CreatedAt   int64
 	StartedAt   *int64
 	CompletedAt *int64
@@ -91,6 +94,7 @@ func discoverMigrations() ([]migration, error) {
 		if err != nil {
 			continue
 		}
+
 		content, err := migrationFiles.ReadFile("migrations/" + entry.Name())
 		if err != nil {
 			return nil, err
@@ -99,6 +103,7 @@ func discoverMigrations() ([]migration, error) {
 		if trimmed == "" {
 			return nil, &MigrationError{Reason: "Migration is empty: " + entry.Name()}
 		}
+
 		sum := sha256.Sum256([]byte(trimmed))
 		found = append(found, migration{
 			version:  number,
@@ -107,6 +112,7 @@ func discoverMigrations() ([]migration, error) {
 			checksum: fmt.Sprintf("%x", sum),
 		})
 	}
+
 	sort.Slice(found, func(i, j int) bool { return found[i].version < found[j].version })
 	if len(found) == 0 {
 		return nil, &MigrationError{Reason: "TurnEcho contains no packaged database migrations."}
@@ -137,17 +143,16 @@ func splitStatements(sqlText string) []string {
 	return statements
 }
 
-func runMigrations(db *sql.DB, dbPath string) error {
-	migrations, err := discoverMigrations()
-	if err != nil {
-		return err
-	}
+// withImmediate runs work inside one BEGIN IMMEDIATE transaction, committing
+// on success and rolling back otherwise.
+func withImmediate(db *sql.DB, work func(ctx context.Context, conn *sql.Conn) error) error {
 	ctx := context.Background()
 	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
+
 	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
 		return err
 	}
@@ -157,38 +162,77 @@ func runMigrations(db *sql.DB, dbPath string) error {
 			conn.ExecContext(ctx, "ROLLBACK")
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, `
+
+	if err := work(ctx, conn); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+		return err
+	}
+	committed = true
+	return nil
+}
+
+func runMigrations(db *sql.DB, dbPath string) error {
+	migrations, err := discoverMigrations()
+	if err != nil {
+		return err
+	}
+	return withImmediate(db, func(ctx context.Context, conn *sql.Conn) error {
+		if err := ensureMigrationTable(ctx, conn); err != nil {
+			return err
+		}
+		applied, err := loadAppliedMigrations(ctx, conn)
+		if err != nil {
+			return err
+		}
+		if err := rejectUnknownMigrations(applied, migrations); err != nil {
+			return err
+		}
+		return applyMigrations(ctx, conn, applied, migrations, dbPath)
+	})
+}
+
+func ensureMigrationTable(ctx context.Context, conn *sql.Conn) error {
+	_, err := conn.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS turnecho_schema_migrations (
 			version INTEGER PRIMARY KEY,
 			name TEXT NOT NULL,
 			checksum TEXT NOT NULL,
 			applied_at INTEGER NOT NULL
-		)`); err != nil {
-		return err
-	}
+		)`)
+	return err
+}
+
+func loadAppliedMigrations(ctx context.Context, conn *sql.Conn) (map[int]migration, error) {
 	rows, err := conn.QueryContext(ctx,
 		`SELECT version, name, checksum FROM turnecho_schema_migrations`)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	applied := map[int]migration{}
 	for rows.Next() {
 		var stored migration
 		if err := rows.Scan(&stored.version, &stored.name, &stored.checksum); err != nil {
 			rows.Close()
-			return err
+			return nil, err
 		}
 		applied[stored.version] = stored
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return nil, err
 	}
+	return applied, nil
+}
 
+// rejectUnknownMigrations refuses databases touched by a newer TurnEcho.
+func rejectUnknownMigrations(applied map[int]migration, migrations []migration) error {
 	packaged := map[int]bool{}
 	for _, item := range migrations {
 		packaged[item.version] = true
 	}
+
 	var unknown []string
 	for version := range applied {
 		if !packaged[version] {
@@ -200,7 +244,13 @@ func runMigrations(db *sql.DB, dbPath string) error {
 		return &MigrationError{Reason: "Database contains migrations unknown to this TurnEcho version: " +
 			strings.Join(unknown, ", ")}
 	}
+	return nil
+}
 
+func applyMigrations(
+	ctx context.Context, conn *sql.Conn,
+	applied map[int]migration, migrations []migration, dbPath string,
+) error {
 	for _, item := range migrations {
 		existing, ok := applied[item.version]
 		if ok {
@@ -212,6 +262,7 @@ func runMigrations(db *sql.DB, dbPath string) error {
 			}
 			continue
 		}
+
 		for _, statement := range splitStatements(item.sql) {
 			if _, err := conn.ExecContext(ctx, statement); err != nil {
 				return err
@@ -224,11 +275,6 @@ func runMigrations(db *sql.DB, dbPath string) error {
 			return err
 		}
 	}
-
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return err
-	}
-	committed = true
 	return nil
 }
 
@@ -336,6 +382,7 @@ func scanJobRow(scanner interface {
 	if err != nil {
 		return nil, err
 	}
+
 	if started.Valid {
 		job.StartedAt = &started.Int64
 	}
@@ -350,51 +397,36 @@ func scanJobRow(scanner interface {
 
 // Claim atomically takes the oldest pending job.
 func (d *DB) Claim() (*Job, error) {
-	ctx := context.Background()
-	conn, err := d.db.Conn(ctx)
+	var claimed *Job
+	err := withImmediate(d.db, func(ctx context.Context, conn *sql.Conn) error {
+		row := conn.QueryRowContext(ctx, `
+			UPDATE turnecho_jobs
+			SET processing_status = ?, started_at = ?
+			WHERE rowid = (
+				SELECT rowid
+				FROM turnecho_jobs
+				WHERE processing_status = ?
+				ORDER BY created_at, rowid
+				LIMIT 1
+			)
+			AND processing_status = ?
+			RETURNING id, host, session_id, turn_id, message, voice, speed,
+				processing_status, created_at, started_at, completed_at, error_message`,
+			Processing, time.Now().Unix(), Pending, Pending)
+		job, err := scanJobRow(row)
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		claimed = job
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
-		return nil, err
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			conn.ExecContext(ctx, "ROLLBACK")
-		}
-	}()
-	row := conn.QueryRowContext(ctx, `
-		UPDATE turnecho_jobs
-		SET processing_status = ?, started_at = ?
-		WHERE rowid = (
-			SELECT rowid
-			FROM turnecho_jobs
-			WHERE processing_status = ?
-			ORDER BY created_at, rowid
-			LIMIT 1
-		)
-		AND processing_status = ?
-		RETURNING id, host, session_id, turn_id, message, voice, speed,
-			processing_status, created_at, started_at, completed_at, error_message`,
-		Processing, time.Now().Unix(), Pending, Pending)
-	job, err := scanJobRow(row)
-	if err == sql.ErrNoRows {
-		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-			return nil, err
-		}
-		committed = true
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
-		return nil, err
-	}
-	committed = true
-	return job, nil
+	return claimed, nil
 }
 
 // HasPending reports whether the queue contains work for a worker.
@@ -417,10 +449,14 @@ func (d *DB) RequeueProcessing() (int64, error) {
 	result, err := d.db.Exec(`
 		UPDATE turnecho_jobs
 		SET processing_status = CASE WHEN playback_started = 1 THEN ? ELSE ? END,
-            started_at = CASE WHEN playback_started = 1 THEN started_at ELSE NULL END,
-            completed_at = CASE WHEN playback_started = 1 THEN ? ELSE NULL END,
-            error_message = CASE WHEN playback_started = 1 THEN 'playback interrupted; automatic replay suppressed' ELSE NULL END
-        WHERE processing_status = ?`, Failed, Pending, time.Now().Unix(), Processing)
+			started_at = CASE WHEN playback_started = 1 THEN started_at ELSE NULL END,
+			completed_at = CASE WHEN playback_started = 1 THEN ? ELSE NULL END,
+			error_message = CASE
+				WHEN playback_started = 1 THEN 'playback interrupted; automatic replay suppressed'
+				ELSE NULL
+			END
+		WHERE processing_status = ?`,
+		Failed, Pending, time.Now().Unix(), Processing)
 	if err != nil {
 		return 0, err
 	}
@@ -453,7 +489,11 @@ func (d *DB) Finish(job *Job) (bool, error) {
 
 // MarkPlayback records a durable intent before the external audio side effect.
 func (d *DB) MarkPlayback(id string) error {
-	result, err := d.db.Exec(`UPDATE turnecho_jobs SET playback_started = 1 WHERE id = ? AND processing_status = ?`, id, Processing)
+	result, err := d.db.Exec(`
+		UPDATE turnecho_jobs
+		SET playback_started = 1
+		WHERE id = ? AND processing_status = ?`,
+		id, Processing)
 	if err != nil {
 		return err
 	}
