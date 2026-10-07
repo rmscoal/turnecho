@@ -188,6 +188,9 @@ func TestModelChangeReloadsBeforeNextJob(t *testing.T) {
 	err := Process(Dependencies{
 		Queue: db,
 		OpenBackend: func(model string) (tts.Engine, error) {
+			if model != "kokoro" && first.closes != 1 {
+				t.Fatal("replacement opened before old model closed")
+			}
 			models = append(models, model)
 			if model == "kokoro" {
 				return first, nil

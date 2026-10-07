@@ -658,3 +658,22 @@ func TestRootHelps(t *testing.T) {
 		t.Errorf("version: code=%d out=%q", code, stdout)
 	}
 }
+
+func TestSpeechCommandsRespectModelOwner(t *testing.T) {
+	home := isolateHome(t)
+	installFakePlayer(t)
+	release, err := worker.HoldLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	previous := openBackend
+	openBackend = func(string) (tts.Engine, error) { t.Fatal("second model opened"); return nil, nil }
+	defer func() { openBackend = previous }()
+	for _, args := range [][]string{{"test"}, {"doctor"}, {"say", "Hello"}, {"say", "Hello", "--output", filepath.Join(home, "out.wav")}} {
+		code, _, stderr := run(t, "", args...)
+		if code != ExitFailed || !strings.Contains(stderr, "already running") {
+			t.Fatalf("%v: code=%d error=%s", args, code, stderr)
+		}
+	}
+}

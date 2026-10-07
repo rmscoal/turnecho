@@ -11,6 +11,7 @@ import (
 	"github.com/rmscoal/turnecho/internal/player"
 	"github.com/rmscoal/turnecho/internal/speak"
 	"github.com/rmscoal/turnecho/internal/tts"
+	"github.com/rmscoal/turnecho/internal/worker"
 )
 
 // TestPhrase is the spoken audio check.
@@ -59,7 +60,7 @@ func newSayCommand() *cobra.Command {
 				return mapConfigError(err)
 			}
 			if output != "" {
-				engine, err := openBackend(cfg.Model)
+				engine, err := openOwnedBackend(cfg.Model)
 				if err != nil {
 					return commandError(err)
 				}
@@ -114,7 +115,7 @@ func newStopCommand() *cobra.Command {
 
 // speakText synthesizes text and plays it through the OS player.
 func speakText(text string, cfg config.Config) error {
-	engine, err := openBackend(cfg.Model)
+	engine, err := openOwnedBackend(cfg.Model)
 	if err != nil {
 		return err
 	}
@@ -156,4 +157,32 @@ func writeSpokenWAV(samples []int16) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+// openOwnedBackend refuses manual speech while another process owns a model.
+// Keep ownership through Close, including native teardown.
+func openOwnedBackend(model string) (tts.Engine, error) {
+	release, err := worker.HoldLock()
+	if err != nil {
+		return nil, err
+	}
+	engine, err := openBackend(model)
+	if err != nil {
+		release()
+		return nil, err
+	}
+	return &ownedEngine{Engine: engine, release: release}, nil
+}
+
+type ownedEngine struct {
+	tts.Engine
+	release func()
+}
+
+func (e *ownedEngine) Close() {
+	if e.release != nil {
+		e.Engine.Close()
+		e.release()
+		e.release = nil
+	}
 }

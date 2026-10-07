@@ -189,12 +189,14 @@ func Process(deps Dependencies) error {
 		if open == nil {
 			open = tts.Open
 		}
+		if engine != nil {
+			engine.Close()
+			engine = nil
+			currentModel = ""
+		}
 		replacement, err := open(model)
 		if err != nil {
 			return nil, err
-		}
-		if engine != nil {
-			engine.Close()
 		}
 		engine, currentModel = replacement, model
 		logger.Debug("model loaded", "model", model)

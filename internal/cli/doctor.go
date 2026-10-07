@@ -52,7 +52,7 @@ func newDoctorCommand() *cobra.Command {
 			if err != nil {
 				return commandError(err)
 			}
-			engine, err := openBackend(cfg.Model)
+			engine, err := openOwnedBackend(cfg.Model)
 			if err != nil {
 				return commandError(err)
 			}

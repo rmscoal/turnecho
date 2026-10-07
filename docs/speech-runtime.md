@@ -62,9 +62,13 @@ Hooks never load the model or wait for audio. A worker loads it only after
 claiming a job and validating configuration. An empty queue exits immediately
 without loading a model.
 
+Manual `say`, `test`, and `doctor` commands take the same ownership lock as
+the worker and report a busy error while it owns the model. Ownership is
+released only after native teardown completes.
+
 Once loaded, the worker keeps one model across chunks and queued jobs. It
-re-reads the model setting before each job; a model change loads a replacement
-and closes the previous model. Voice and speed remain the snapshots stored
+re-reads the model setting before each job; a model change closes the previous model
+before loading its replacement. Voice and speed remain the snapshots stored
 with each queued job.
 
 After the last job finishes, the worker waits for up to **10 minutes of
