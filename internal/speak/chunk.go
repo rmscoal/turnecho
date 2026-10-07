@@ -5,7 +5,7 @@ import (
 	"unicode/utf8"
 )
 
-// ChunkChars bounds synthesis latency. A single longer word stays intact.
+// ChunkChars bounds every synthesis request, including long unbroken tokens.
 const ChunkChars = 300
 
 // Chunks splits prose at sentence boundaries, falling back to word boundaries.
@@ -23,6 +23,16 @@ func Chunks(text string) []string {
 	}
 	for _, word := range strings.Fields(text) {
 		n := utf8.RuneCountInString(word)
+		if n > ChunkChars {
+			flush()
+			runes := []rune(word)
+			for len(runes) > ChunkChars {
+				chunks = append(chunks, string(runes[:ChunkChars]))
+				runes = runes[ChunkChars:]
+			}
+			word = string(runes)
+			n = len(runes)
+		}
 		if len(words) > 0 && length+1+n > ChunkChars {
 			flush()
 		}

@@ -39,8 +39,17 @@ func TestChunksBoundedWithoutLosingWords(t *testing.T) {
 	if strings.Join(chunks, " ") != strings.Join(strings.Fields(text), " ") {
 		t.Fatal("chunking changed text order or lost words")
 	}
-	longWord := strings.Repeat("a", ChunkChars+10)
-	if got := Chunks("hello " + longWord + " goodbye"); !reflect.DeepEqual(got, []string{"hello", longWord, "goodbye"}) {
-		t.Errorf("long word was split: %q", got)
+}
+
+func TestLongTokensCannotBypassChunkLimit(t *testing.T) {
+	word := strings.Repeat("工程", ChunkChars*3)
+	chunks := Chunks("hello " + word + " goodbye")
+	for _, chunk := range chunks {
+		if n := utf8.RuneCountInString(chunk); n > ChunkChars {
+			t.Fatalf("unbounded token: %d runes", n)
+		}
+	}
+	if strings.ReplaceAll(strings.Join(chunks, ""), " ", "") != "hello"+word+"goodbye" {
+		t.Fatal("text lost or reordered")
 	}
 }

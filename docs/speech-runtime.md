@@ -79,7 +79,7 @@ period. Synthesis and playback time do not count as inactivity. Polling is
 every 250 ms, so exit may occur up to one poll after the timeout.
 
 Long text is split at sentence boundaries, with a fallback at word boundaries
-around 300 characters. A single longer word is kept intact. Each chunk is
+at 300 Unicode characters. Longer unbroken tokens are split too. Each chunk is
 synthesized and played in order before the next chunk begins. This starts
 speech before all response audio is synthesized, but there can be synthesis gaps
 between chunks. Overlapping synthesis and playback is planned for Step 8.
@@ -163,3 +163,7 @@ read from disk. Legacy `player.pid` files are ignored.
 Local state directories are restricted to their owner (0700), including
 existing installations. Queue, sidecar, lock, and log files use 0600. State
 opens reject symlinks, nonregular files, and files owned by another user.
+
+Hook input is limited to 8 MiB. Oversized input is rejected with the normal
+empty JSON response and a diagnostic that contains no message text. Every
+synthesis chunk is limited to 300 Unicode characters, including long tokens.

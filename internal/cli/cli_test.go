@@ -736,3 +736,27 @@ func TestRegisteredHooksExecuteBundledBinary(t *testing.T) {
 		}
 	}
 }
+
+type measuredReader struct {
+	reader *strings.Reader
+	bytes  int
+}
+
+func (r *measuredReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytes += n
+	return n, err
+}
+func TestHookRejectsOversizedInputWithoutReadingEverything(t *testing.T) {
+	isolateHome(t)
+	calls := stubSpawn(t)
+	input := &measuredReader{reader: strings.NewReader(strings.Repeat(" ", 9<<20))}
+	var stdout, stderr bytes.Buffer
+	code := Run([]string{"hook", "stop"}, input, &stdout, &stderr)
+	if code != ExitOK || stdout.String() != "{}\n" || *calls != 0 {
+		t.Fatalf("code=%d output=%s spawns=%d", code, stdout.String(), *calls)
+	}
+	if input.bytes > (8<<20)+1 || !strings.Contains(stderr.String(), "too large") {
+		t.Fatalf("read=%d error=%s", input.bytes, stderr.String())
+	}
+}

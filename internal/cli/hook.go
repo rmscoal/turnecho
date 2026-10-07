@@ -60,11 +60,18 @@ func forcedHost(cmd *cobra.Command) (string, bool) {
 	return forced, true
 }
 
+// MaxHookInputBytes bounds memory used by untrusted host payloads.
+const MaxHookInputBytes = 8 << 20
+
 // readPayload parses hook stdin, falling back to an empty payload.
 func readPayload(stdin io.Reader, logger *slog.Logger) map[string]any {
-	content, err := io.ReadAll(stdin)
+	content, err := io.ReadAll(io.LimitReader(stdin, MaxHookInputBytes+1))
 	if err != nil {
 		logger.Error("cannot read hook input", "error", err)
+		return nil
+	}
+	if len(content) > MaxHookInputBytes {
+		logger.Error("hook input too large", "limit_bytes", MaxHookInputBytes)
 		return nil
 	}
 	var raw any
