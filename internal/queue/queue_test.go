@@ -265,3 +265,38 @@ func TestUnknownMigrationFailsSafe(t *testing.T) {
 		t.Fatalf("got %v (%T), want a migration error", err, err)
 	}
 }
+
+func TestOpenTightensExistingPermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shared")
+	os.Mkdir(dir, 0755)
+	path := filepath.Join(dir, "queue.db")
+	os.WriteFile(path, nil, 0644)
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for name, want := range map[string]os.FileMode{dir: 0700, path: 0600} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode=%o want=%o", name, info.Mode().Perm(), want)
+		}
+	}
+}
+func TestOpenRejectsSymlinkDatabase(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "target")
+	os.WriteFile(target, []byte("private unrelated data"), 0600)
+	path := filepath.Join(t.TempDir(), "queue.db")
+	os.Symlink(target, path)
+	if db, err := Open(path); err == nil {
+		db.Close()
+		t.Fatal("symlink database accepted")
+	}
+	data, _ := os.ReadFile(target)
+	if string(data) != "private unrelated data" {
+		t.Fatal("symlink target changed")
+	}
+}

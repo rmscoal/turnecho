@@ -21,6 +21,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/rmscoal/turnecho/internal/config"
+	"github.com/rmscoal/turnecho/internal/paths"
 )
 
 //go:embed migrations/*.sql
@@ -233,8 +234,24 @@ func runMigrations(db *sql.DB, dbPath string) error {
 
 // Open creates the parent directory, opens the database, and migrates it.
 func Open(dbPath string) (*DB, error) {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o700); err != nil {
+	file, err := paths.OpenPrivateFile(dbPath, os.O_CREATE|os.O_RDWR)
+	if err != nil {
 		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, err := paths.OpenPrivateFile(dbPath+suffix, os.O_RDWR)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		if err := sidecar.Close(); err != nil {
+			return nil, err
+		}
 	}
 	absolute, err := filepath.Abs(dbPath)
 	if err != nil {

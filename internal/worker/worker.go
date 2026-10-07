@@ -43,10 +43,10 @@ func HoldLock() (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
+	if err := paths.EnsurePrivateDir(filepath.Dir(lockPath)); err != nil {
 		return nil, err
 	}
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	lockFile, err := paths.OpenPrivateFile(lockPath, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return nil, err
 	}
@@ -78,10 +78,10 @@ func SpawnBackground() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+	if err := paths.EnsurePrivateDir(filepath.Dir(logPath)); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := paths.OpenPrivateFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY)
 	if err != nil {
 		return err
 	}

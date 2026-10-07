@@ -132,3 +132,7 @@ minutes (five minutes if the header cannot be read). A timeout or `stop`
 cancels and reaps the owned player process group. Playback is serialized by
 its own lock. `stop` uses a private local Unix socket and never signals a PID
 read from disk. Legacy `player.pid` files are ignored.
+
+Local state directories are restricted to their owner (0700), including
+existing installations. Queue, sidecar, lock, and log files use 0600. State
+opens reject symlinks, nonregular files, and files owned by another user.

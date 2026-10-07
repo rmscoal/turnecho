@@ -221,10 +221,10 @@ func lockPath(configPath string) string {
 }
 
 func withLock(configPath string, run func() error) error {
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+	if err := paths.EnsurePrivateDir(filepath.Dir(configPath)); err != nil {
 		return err
 	}
-	lockFile, err := os.OpenFile(lockPath(configPath), os.O_CREATE|os.O_RDWR, 0o600)
+	lockFile, err := paths.OpenPrivateFile(lockPath(configPath), os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return err
 	}

@@ -78,10 +78,10 @@ func playWithTimeout(player, wavPath string, timeout time.Duration) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := paths.EnsurePrivateDir(dir); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(dir, "player.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := paths.OpenPrivateFile(filepath.Join(dir, "player.lock"), os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return err
 	}
@@ -95,17 +95,7 @@ func playWithTimeout(player, wavPath string, timeout time.Duration) error {
 		return err
 	}
 	socketDir := filepath.Dir(socket)
-	if err := os.MkdirAll(socketDir, 0700); err != nil {
-		return err
-	}
-	info, err := os.Lstat(socketDir)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
-		return fmt.Errorf("unsafe playback control directory")
-	}
-	if err := os.Chmod(socketDir, 0700); err != nil {
+	if err := paths.EnsurePrivateDir(socketDir); err != nil {
 		return err
 	}
 	// Only the lock owner may remove an abandoned socket.
