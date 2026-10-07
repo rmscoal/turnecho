@@ -677,3 +677,19 @@ func TestSpeechCommandsRespectModelOwner(t *testing.T) {
 		}
 	}
 }
+
+func TestSayOutputFailurePreservesExistingFile(t *testing.T) {
+	home := isolateHome(t)
+	output := filepath.Join(home, "out.wav")
+	os.WriteFile(output, []byte("existing"), 0600)
+	useEngine(t, &speechEngine{fail: errors.New("inference failed")}, nil)
+	code, _, _ := run(t, "", "say", "Hello.", "--output", output)
+	data, _ := os.ReadFile(output)
+	if code != ExitFailed || string(data) != "existing" {
+		t.Fatalf("code=%d output=%s", code, data)
+	}
+	files, _ := filepath.Glob(filepath.Join(home, ".turnecho-*.wav"))
+	if len(files) != 0 {
+		t.Fatalf("temporary files retained: %v", files)
+	}
+}

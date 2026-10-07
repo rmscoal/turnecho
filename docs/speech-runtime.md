@@ -81,8 +81,9 @@ around 300 characters. A single longer word is kept intact. Each chunk is
 synthesized and played in order before the next chunk begins. This starts
 speech before all response audio is synthesized, but there can be synthesis gaps
 between chunks. Overlapping synthesis and playback is planned for Step 8.
-The worker holds only one chunk of audio at a time. `say --output` assembles
-all chunks into one WAV file in memory.
+The worker holds only one chunk of audio at a time. `say --output` streams chunks to a temporary WAV, finalizes its header, and
+atomically replaces the output only after successful synthesis. PCM writing
+uses 32 KiB buffers rather than one file write per sample.
 
 The hook still speaks validated summary markers only. Full-answer speech and
 Markdown sanitization are Step 8 work. The `say` command accepts longer prose

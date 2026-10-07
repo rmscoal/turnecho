@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
@@ -65,18 +66,7 @@ func newSayCommand() *cobra.Command {
 					return commandError(err)
 				}
 				defer engine.Close()
-				var samples []int16
-				for _, chunk := range speak.Chunks(args[0]) {
-					part, err := engine.Synthesize(chunk, cfg.Voice, cfg.Speed)
-					if err != nil {
-						return commandError(err)
-					}
-					samples = append(samples, part...)
-				}
-				if len(samples) == 0 {
-					return commandError(fmt.Errorf("speech text produced no audio"))
-				}
-				if err := tts.WriteWAV(output, samples); err != nil {
+				if err := writeSpeechFile(output, args[0], cfg, engine); err != nil {
 					return commandError(err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", output)
@@ -189,4 +179,41 @@ func (e *ownedEngine) Close() {
 			fmt.Fprintf(os.Stderr, "turnecho: resume queued speech: %v\n", err)
 		}
 	}
+}
+
+func writeSpeechFile(output, text string, cfg config.Config, engine tts.Engine) error {
+	chunks := speak.Chunks(text)
+	if len(chunks) == 0 {
+		return fmt.Errorf("speech text must be nonempty")
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(output), ".turnecho-*.wav")
+	if err != nil {
+		return err
+	}
+	path := temporary.Name()
+	defer os.Remove(path)
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	writer, err := tts.CreateWAV(path)
+	if err != nil {
+		return err
+	}
+	defer writer.Close()
+	for _, chunk := range chunks {
+		samples, err := engine.Synthesize(chunk, cfg.Voice, cfg.Speed)
+		if err != nil {
+			return err
+		}
+		if len(samples) == 0 {
+			return fmt.Errorf("speech text produced no audio")
+		}
+		if err := writer.Write(samples); err != nil {
+			return err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return err
+	}
+	return os.Rename(path, output)
 }

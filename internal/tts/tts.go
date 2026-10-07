@@ -6,6 +6,10 @@ package tts
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"math"
 	"os"
 )
 
@@ -35,28 +39,88 @@ func (SilentBackend) Synthesize(_, _ string, _ float64) ([]int16, error) {
 // Close is a no-op for the test backend.
 func (SilentBackend) Close() {}
 
+// WAVWriter streams chunks without retaining the complete audio in memory.
+type WAVWriter struct {
+	file      *os.File
+	dataBytes int
+	writeErr  error
+}
+
+// CreateWAV opens a mono PCM WAV. Close finalizes its header.
+func CreateWAV(path string) (*WAVWriter, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := file.Write(wavHeader(0)); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return &WAVWriter{file: file}, nil
+}
+
+// Write appends samples with bounded byte buffers and checks the RIFF limit.
+func (w *WAVWriter) Write(samples []int16) error {
+	if w.file == nil {
+		return os.ErrClosed
+	}
+	if w.writeErr != nil {
+		return w.writeErr
+	}
+	if uint64(len(samples))*2+uint64(w.dataBytes) > math.MaxUint32-36 {
+		return fmt.Errorf("audio exceeds WAV size limit")
+	}
+	if err := writePCM(w.file, samples); err != nil {
+		w.writeErr = err
+		return err
+	}
+	w.dataBytes += len(samples) * 2
+	return nil
+}
+
+// Close finalizes the header and releases the file, including after failure.
+func (w *WAVWriter) Close() error {
+	if w.file == nil {
+		return nil
+	}
+	file := w.file
+	w.file = nil
+	err := w.writeErr
+	if err == nil {
+		if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+			err = seekErr
+		} else {
+			_, err = file.Write(wavHeader(w.dataBytes))
+		}
+	}
+	return errors.Join(err, file.Close())
+}
+
 // WriteWAV stores mono 16-bit samples as a WAV file.
-func WriteWAV(path string, samples []int16) (err error) {
-	file, err := os.Create(path)
+func WriteWAV(path string, samples []int16) error {
+	writer, err := CreateWAV(path)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		closeErr := file.Close()
-		if err == nil {
-			err = closeErr
+	err = writer.Write(samples)
+	return errors.Join(err, writer.Close())
+}
+
+func writePCM(writer io.Writer, samples []int16) error {
+	var buffer [32768]byte
+	for len(samples) > 0 {
+		count := min(len(samples), len(buffer)/2)
+		for i, sample := range samples[:count] {
+			binary.LittleEndian.PutUint16(buffer[2*i:], uint16(sample))
 		}
-	}()
-	dataBytes := len(samples) * 2
-	if _, err := file.Write(wavHeader(dataBytes)); err != nil {
-		return err
-	}
-	buffer := make([]byte, 2)
-	for _, sample := range samples {
-		binary.LittleEndian.PutUint16(buffer, uint16(sample))
-		if _, err := file.Write(buffer); err != nil {
+		written, err := writer.Write(buffer[:count*2])
+		if err != nil {
 			return err
 		}
+		if written != count*2 {
+			return io.ErrShortWrite
+		}
+		samples = samples[count:]
 	}
 	return nil
 }
