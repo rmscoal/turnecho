@@ -3,7 +3,8 @@
 Step 6 uses Kokoro English v0.19 (FP32) through sherpa-onnx Go v1.13.8.
 Speech runs locally with no Python interpreter or network access. The model
 and native libraries must already be available before speech commands run.
-The installer and distributable runtime packaging are Step 7 work.
+The installer remains Step 7 work. Native archives can already be built and
+verified using the packaging commands below.
 
 ## Build
 
@@ -20,7 +21,8 @@ make build-audio
 This runs `CGO_ENABLED=1 go build -tags sherpa -o turnecho ./cmd/turnecho`.
 It requires a C compiler. The pinned sherpa Go modules provide the native
 libraries, and development builds link against their module-cache locations.
-The resulting binary is not yet portable to a machine without those libraries.
+The development binary requires those module-cache libraries. Use the native
+archive builder below for a portable bundle.
 See [the packaging spike](spike-sherpa-go.md) for the verified macOS recipe.
 
 ## Model files
@@ -108,10 +110,35 @@ the opt-in integration tests load a real model. They check multiple speakers,
 non-silent audio, queued chunk playback, and model cleanup without playing
 sound or downloading files.
 
-If native loading fails, check that `model.onnx` is the FP32 English v0.19
-model, all companion files were extracted, and the module-cache native
-libraries still exist. Release binaries will need bundled library paths;
-the development module-cache path is not a distribution strategy.
+## Portable native archives
+
+```sh
+make package-audio MODEL_DIR=/absolute/path/to/kokoro-en-v0_19
+make test-package-audio MODEL_DIR=/absolute/path/to/kokoro-en-v0_19
+```
+
+The host-native builder supports macOS arm64/amd64 and Linux amd64. It requires
+Go, a C compiler, and macOS signing tools or Linux `patchelf`. It replaces the
+starter GoReleaser configuration, which could produce binaries without speech.
+Archives in `dist/` contain `bin/turnecho`, `lib/`, the pinned model under
+`share/turnecho/runtimes/`, plugin metadata, hooks, skills, and licenses.
+`SHA256SUMS` covers bundle files; a separate checksum covers the archive.
+Set `TURNECHO_VERSION` to embed a version (default `dev`).
+
+After extracting, run `bin/turnecho` directly. Keep the directory together.
+The binary finds the bundled model relative to its real executable path,
+including when invoked through a symlink. `TURNECHO_MODEL_DIR` still overrides
+that location. No Go, Python, module cache, or runtime download is needed.
+Audio playback still requires the system's `afplay` or Linux `aplay`.
+macOS uses ad hoc signatures; Developer ID signing and notarization remain
+release work. Installer registration and upgrade commands are also planned.
+
+The relocation test checks all file hashes, synthesizes a real WAV using an
+isolated HOME, and verifies bundled library loading. CI performs this check on
+macOS and Linux using the SHA256-pinned official model archive. Model licenses
+are copied with the model, and the sherpa license accompanies the libraries.
+Full third-party redistribution notices must be checked before publishing a
+binary release.
 
 ## Queue recovery
 

@@ -23,6 +23,11 @@ func ModelDir(model string) (string, error) {
 	if dir := os.Getenv(ModelDirEnv); dir != "" {
 		return dir, nil
 	}
+	if executable, err := os.Executable(); err == nil {
+		if dir := bundledModelDir(executable, id); dir != "" {
+			return dir, nil
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
@@ -79,4 +84,16 @@ func pcm16(samples []float32) ([]int16, error) {
 		pcm[i] = int16(math.Round(max(-32768, min(32767, value*32768))))
 	}
 	return pcm, nil
+}
+
+func bundledModelDir(executable, id string) string {
+	// Resolve a command symlink so the model follows the installed bundle.
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	dir := filepath.Join(filepath.Dir(executable), "..", "share", "turnecho", "runtimes", id)
+	if _, err := os.Stat(dir); err == nil {
+		return filepath.Clean(dir)
+	}
+	return ""
 }

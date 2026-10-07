@@ -18,7 +18,7 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-14]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -31,3 +31,22 @@ jobs:
       - run: go build -tags sherpa ./...
       - run: go vet -tags sherpa ./...
       - run: go test -tags sherpa ./...
+
+      - name: Install Linux packaging and playback tools
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y patchelf alsa-utils
+      - name: Download and verify pinned model archive
+        shell: bash
+        run: |
+          curl --fail --location --retry 3 -o "$RUNNER_TEMP/kokoro.tar.bz2" \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2
+          echo "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7  $RUNNER_TEMP/kokoro.tar.bz2" | shasum -a 256 -c -
+          tar -xjf "$RUNNER_TEMP/kokoro.tar.bz2" -C "$RUNNER_TEMP"
+      - name: Verify relocated native runtime and archive
+        run: ./scripts/test-package-audio.sh "$RUNNER_TEMP/kokoro-en-v0_19" dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256

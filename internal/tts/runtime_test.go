@@ -84,3 +84,16 @@ func TestPCM16(t *testing.T) {
 		}
 	}
 }
+
+func TestBundledModelDirectory(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "bin", "turnecho")
+	want := filepath.Join(root, "share", "turnecho", "runtimes", "kokoro-en-v0_19")
+	os.MkdirAll(want, 0755)
+	if got := bundledModelDir(executable, "kokoro-en-v0_19"); got != want {
+		t.Fatalf("got=%s want=%s", got, want)
+	}
+	if got := bundledModelDir(executable, "missing"); got != "" {
+		t.Fatalf("missing model resolved: %s", got)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -691,5 +692,47 @@ func TestSayOutputFailurePreservesExistingFile(t *testing.T) {
 	files, _ := filepath.Glob(filepath.Join(home, ".turnecho-*.wav"))
 	if len(files) != 0 {
 		t.Fatalf("temporary files retained: %v", files)
+	}
+}
+
+func TestRegisteredHooksExecuteBundledBinary(t *testing.T) {
+	var metadata struct {
+		Hooks map[string][]struct{ Hooks []struct{ Command string } }
+	}
+	data, err := os.ReadFile("../../hooks/hooks.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "plugin with spaces")
+	os.MkdirAll(filepath.Join(root, "bin"), 0700)
+	os.WriteFile(filepath.Join(root, "bin", "turnecho"), []byte("#!/bin/sh\nprintf '%s' \"$*\" >&2\nprintf '{}\\n'\n"), 0700)
+	for event, groups := range metadata.Hooks {
+		want := "hook stop"
+		if event == "UserPromptSubmit" {
+			want = "hook prompt"
+		}
+		for _, group := range groups {
+			for _, hook := range group.Hooks {
+				for _, host := range []string{"codex", "claude"} {
+					cmd := exec.Command("/bin/sh", "-c", hook.Command)
+					cmd.Env = append(os.Environ(), "PLUGIN_ROOT="+root, "CLAUDE_PLUGIN_ROOT=")
+					if host == "claude" {
+						cmd.Env = append(cmd.Env, "CLAUDE_PLUGIN_ROOT="+root)
+					}
+					var stdout, stderr bytes.Buffer
+					cmd.Stdout = &stdout
+					cmd.Stderr = &stderr
+					if err := cmd.Run(); err != nil {
+						t.Fatal(err)
+					}
+					if stdout.String() != "{}\n" || stderr.String() != want {
+						t.Fatalf("event=%s host=%s out=%q args=%q", event, host, stdout.String(), stderr.String())
+					}
+				}
+			}
+		}
 	}
 }

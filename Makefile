@@ -1,4 +1,4 @@
-.PHONY: help build build-audio test test-race cover vet fmt fmt-check check check-audio smoke clean
+.PHONY: help package-audio test-package-audio build build-audio test test-race cover vet fmt fmt-check check check-audio smoke clean
 
 SMOKE_DIR := .tmp/smoke
 SMOKE_HOME := $(SMOKE_DIR)/home
@@ -79,3 +79,9 @@ clean: ## Remove local scratch dirs, binaries, and the test cache.
 	@echo "== clean =="
 	@rm -rf .tmp turnecho
 	@go clean -testcache
+
+package-audio: ## Build a portable native archive, including MODEL_DIR.
+	@./scripts/package-audio.sh "$(MODEL_DIR)"
+
+test-package-audio: ## Relocate and verify a full native archive without playback.
+	@./scripts/test-package-audio.sh "$(MODEL_DIR)"
