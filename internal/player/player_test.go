@@ -8,10 +8,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/rmscoal/turnecho/internal/paths"
+	"github.com/rmscoal/turnecho/internal/tts"
 )
 
 func playerName() string {
@@ -86,74 +88,101 @@ func TestStopWithoutPlayback(t *testing.T) {
 	}
 }
 
-func TestStopKillsPlayer(t *testing.T) {
+func TestStopIgnoresUnrelatedPid(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	command := exec.Command("sleep", "30")
 	if err := command.Start(); err != nil {
-		t.Skipf("sleep unavailable: %v", err)
-	}
-	pidPath, err := paths.PlayerPid()
-	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(command.Process.Pid)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	stopped, err := Stop()
-	if err != nil || !stopped {
-		t.Errorf("stop = %v, %v; want true, nil", stopped, err)
-	}
-	_ = command.Wait()
-	if err := unix.Kill(command.Process.Pid, 0); err != unix.ESRCH {
-		t.Errorf("player still alive: %v", err)
-	}
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Error("pid file left behind after stop")
-	}
-}
-
-func TestStopCleansStalePid(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	command := exec.Command("sh", "-c", "exit 0")
-	if err := command.Run(); err != nil {
-		t.Fatal(err)
-	}
-	pidPath, err := paths.PlayerPid()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	dead := command.ProcessState.Pid()
-	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(dead)), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	defer func() { command.Process.Kill(); command.Wait() }()
+	pidPath, _ := paths.PlayerPid()
+	os.MkdirAll(filepath.Dir(pidPath), 0700)
+	os.WriteFile(pidPath, []byte(strconv.Itoa(command.Process.Pid)), 0600)
 	stopped, err := Stop()
 	if err != nil || stopped {
-		t.Errorf("stop = %v, %v; want false, nil", stopped, err)
+		t.Fatalf("stop=%v error=%v", stopped, err)
 	}
-	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
-		t.Error("stale pid file left behind")
+	if err := unix.Kill(command.Process.Pid, 0); err != nil {
+		t.Fatalf("unrelated process killed: %v", err)
 	}
 }
 
-func TestStopRejectsGarbagePid(t *testing.T) {
+func TestStopOwnedPlayback(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	pidPath, err := paths.PlayerPid()
-	if err != nil {
+	script := filepath.Join(t.TempDir(), "player")
+	os.WriteFile(script, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0700)
+	done := make(chan error, 1)
+	go func() { done <- PlayWith(script, "ignored.wav") }()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		stopped, err := Stop()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stopped {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("playback control not ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled playback returned success")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("player not reaped")
+	}
+}
+
+func TestHungPlaybackTimesOut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	script := filepath.Join(t.TempDir(), "player")
+	os.WriteFile(script, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0700)
+	started := time.Now()
+	if err := playWithTimeout(script, "ignored.wav", 30*time.Millisecond); err == nil {
+		t.Fatal("hung player succeeded")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("hung player retained resources")
+	}
+}
+
+func TestPlaybackTimeoutUsesWAVDuration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audio.wav")
+	if err := tts.WriteWAV(path, make([]int16, tts.SampleRate*2)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
-		t.Fatal(err)
+	if got := playbackTimeout(path); got != 32*time.Second {
+		t.Fatalf("timeout=%s", got)
 	}
-	if err := os.WriteFile(pidPath, []byte("nope"), 0o600); err != nil {
-		t.Fatal(err)
+}
+
+func TestConcurrentPlaybackIsRejected(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	script := filepath.Join(t.TempDir(), "player")
+	os.WriteFile(script, []byte("#!/bin/sh\nexec /bin/sleep 30\n"), 0700)
+	done := make(chan error, 1)
+	go func() { done <- playWithTimeout(script, "ignored.wav", time.Second) }()
+	socket, _ := controlSocket()
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(socket); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("socket missing")
+		}
+		time.Sleep(time.Millisecond)
 	}
-	if _, err := Stop(); err == nil {
-		t.Error("garbage pid file accepted")
+	if err := PlayWith(script, "ignored.wav"); err == nil {
+		t.Error("concurrent player accepted")
+	}
+	Stop()
+	<-done
+	if _, err := os.Stat(socket); !os.IsNotExist(err) {
+		t.Error("socket retained")
 	}
 }

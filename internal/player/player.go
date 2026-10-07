@@ -2,13 +2,19 @@
 package player
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
-	"strings"
+	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -44,63 +50,144 @@ func Play(wavPath string) error {
 	return PlayWith(player, wavPath)
 }
 
-// PlayWith speaks one file through an explicit player binary.
+// PlayWith speaks one file with a deadline based on its audio length.
 func PlayWith(player, wavPath string) error {
-	pidPath, err := paths.PlayerPid()
+	return playWithTimeout(player, wavPath, playbackTimeout(wavPath))
+}
+
+func playbackTimeout(path string) time.Duration {
+	file, err := os.Open(path)
+	if err != nil {
+		return 5 * time.Minute
+	}
+	defer file.Close()
+	var header [44]byte
+	if _, err := io.ReadFull(file, header[:]); err != nil {
+		return 5 * time.Minute
+	}
+	rate := binary.LittleEndian.Uint32(header[28:32])
+	if string(header[:4]) != "RIFF" || string(header[36:40]) != "data" || rate == 0 {
+		return 5 * time.Minute
+	}
+	duration := time.Duration(binary.LittleEndian.Uint32(header[40:44])) * time.Second / time.Duration(rate)
+	return min(duration+30*time.Second, 10*time.Minute)
+}
+
+func playWithTimeout(player, wavPath string, timeout time.Duration) error {
+	dir, err := paths.ConfigDir()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	command := exec.Command(player, wavPath)
+	lock, err := os.OpenFile(filepath.Join(dir, "player.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return fmt.Errorf("playback already active: %w", err)
+	}
+	defer unix.Flock(int(lock.Fd()), unix.LOCK_UN)
+	socket, err := controlSocket()
+	if err != nil {
+		return err
+	}
+	socketDir := filepath.Dir(socket)
+	if err := os.MkdirAll(socketDir, 0700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(socketDir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Sys().(*syscall.Stat_t).Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("unsafe playback control directory")
+	}
+	if err := os.Chmod(socketDir, 0700); err != nil {
+		return err
+	}
+	// Only the lock owner may remove an abandoned socket.
+	if err := os.Remove(socket); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	if err := os.Chmod(socket, 0600); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, player, wavPath)
+	// Kill the player group as well, so a wrapper cannot leave a child behind.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	command.Cancel = func() error { return unix.Kill(-command.Process.Pid, unix.SIGKILL) }
 	if err := command.Start(); err != nil {
 		return err
 	}
-	// One pid file is shared by every player: concurrent playback (worker
-	// plus a manual test) means stop only silences the last one started.
-	// Best effort: a stale pid file only affects turnecho stop.
-	_ = os.WriteFile(pidPath, []byte(strconv.Itoa(command.Process.Pid)), 0o600)
-	waitErr := command.Wait()
-	_ = os.Remove(pidPath)
-	return waitErr
+	controlled := make(chan struct{})
+	go func() {
+		defer close(controlled)
+		for {
+			conn, err := listener.AcceptUnix()
+			if err != nil {
+				return
+			}
+			conn.SetDeadline(time.Now().Add(time.Second))
+			var request [4]byte
+			if _, err := io.ReadFull(conn, request[:]); err == nil && string(request[:]) == "stop" {
+				cancel()
+				conn.Write([]byte("ok"))
+			}
+			conn.Close()
+		}
+	}()
+	err = command.Wait()
+	listener.Close()
+	<-controlled
+	if ctx.Err() != nil {
+		return fmt.Errorf("playback cancelled or timed out: %w", ctx.Err())
+	}
+	return err
 }
 
-// Stop silences active playback, reporting whether anything was playing.
-//
-// The pid file is standard practice but cannot fully rule out pid reuse;
-// Step 8 replaces this with worker-mediated stop alongside chunk playback.
+// Stop asks the playback owner to cancel its own child. A PID file is never
+// trusted to signal a process, so stale or forged PIDs cannot kill other apps.
 func Stop() (bool, error) {
-	pidPath, err := paths.PlayerPid()
+	socket, err := controlSocket()
 	if err != nil {
 		return false, err
 	}
-	content, err := os.ReadFile(pidPath)
+	conn, err := net.DialTimeout("unix", socket, time.Second)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, unix.ECONNREFUSED) {
 			return false, nil
 		}
 		return false, err
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(content)))
-	if err != nil || pid <= 0 {
-		return false, fmt.Errorf("invalid playback pid file at %s", pidPath)
-	}
-	if err := unix.Kill(pid, 0); err != nil {
-		// ESRCH means the player already exited; anything else is real.
-		if err == unix.ESRCH {
-			_ = os.Remove(pidPath)
-			return false, nil
-		}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(time.Second))
+	if _, err := conn.Write([]byte("stop")); err != nil {
 		return false, err
 	}
-	if err := unix.Kill(pid, unix.SIGKILL); err != nil {
-		if err == unix.ESRCH {
-			_ = os.Remove(pidPath)
-			return false, nil
-		}
+	var response [2]byte
+	if _, err := io.ReadFull(conn, response[:]); err != nil {
 		return false, err
 	}
-	_ = os.Remove(pidPath)
-	return true, nil
+	return string(response[:]) == "ok", nil
+}
+
+// Unix socket addresses are limited to about 100 bytes. Hash the configuration
+// path into a short per-user directory, even when HOME is deeply nested.
+func controlSocket() (string, error) {
+	dir, err := paths.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Join("/tmp", fmt.Sprintf("turnecho-%d-%x", os.Getuid(), sum[:8]), "player.sock"), nil
 }
