@@ -504,3 +504,57 @@ func TestJobArrivingDuringShutdownIsProcessed(t *testing.T) {
 		t.Fatalf("new job left %s", status)
 	}
 }
+
+func TestPlaybackIntentWriteFailureNeverPlays(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, path := openQueue(t)
+	db.Insert("codex", "s", "one", "Hello.", "speaker-0", 1)
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`CREATE TRIGGER reject_playback BEFORE UPDATE OF playback_started ON turnecho_jobs BEGIN SELECT RAISE(FAIL, 'intent unavailable'); END`); err != nil {
+		t.Fatal(err)
+	}
+	engine := &recordingEngine{}
+	err = Process(Dependencies{Queue: db, OpenBackend: func(string) (tts.Engine, error) { return engine, nil }, Play: func(string) error { t.Fatal("audio played without durable intent"); return nil }, PollInterval: time.Millisecond, IdleTimeout: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, message := jobState(t, path, "one"); status != queue.Failed || !strings.Contains(message, "intent unavailable") {
+		t.Fatalf("status=%s error=%s", status, message)
+	}
+	if engine.closes != 1 {
+		t.Fatal("model retained after intent failure")
+	}
+}
+
+func TestShutdownHandoffAfterContenderGivesUp(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	db, path := openQueue(t)
+	db.Insert("codex", "s", "one", "Hello.", "speaker-0", 1)
+	closing, finishClose := make(chan struct{}), make(chan struct{})
+	engine := &closingEngine{onClose: func() {}}
+	engine.onClose = func() {
+		if engine.closes == 1 {
+			close(closing)
+			<-finishClose
+		}
+	}
+	deps := Dependencies{Queue: db, OpenBackend: func(string) (tts.Engine, error) { return engine, nil }, Play: func(string) error { return nil }, PollInterval: time.Millisecond, IdleTimeout: time.Millisecond}
+	done := make(chan error, 1)
+	go func() { done <- Process(deps) }()
+	<-closing
+	db.Insert("codex", "s", "two", "New work.", "speaker-0", 1)
+	if err := Process(deps); !errors.Is(err, ErrAlreadyRunning) {
+		t.Errorf("contender=%v", err)
+	}
+	close(finishClose)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if status, _ := jobState(t, path, "two"); status != queue.Success {
+		t.Fatalf("new work left %s", status)
+	}
+}

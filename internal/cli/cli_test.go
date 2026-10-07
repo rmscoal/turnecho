@@ -760,3 +760,25 @@ func TestHookRejectsOversizedInputWithoutReadingEverything(t *testing.T) {
 		t.Fatalf("read=%d error=%s", input.bytes, stderr.String())
 	}
 }
+
+func TestModelOwnerAcrossProcesses(t *testing.T) {
+	if os.Getenv("TURNECHO_TEST_MODEL_OWNER_CHILD") == "1" {
+		openBackend = func(string) (tts.Engine, error) { os.Exit(3); return nil, nil }
+		code, _, stderr := run(t, "", "say", "Hello.", "--output", filepath.Join(os.Getenv("HOME"), "out.wav"))
+		if code != ExitFailed || !strings.Contains(stderr, "already running") {
+			t.Fatalf("code=%d error=%s", code, stderr)
+		}
+		return
+	}
+	isolateHome(t)
+	release, err := worker.HoldLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	command := exec.Command(os.Args[0], "-test.run=^TestModelOwnerAcrossProcesses$")
+	command.Env = append(os.Environ(), "TURNECHO_TEST_MODEL_OWNER_CHILD=1")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("child: %v %s", err, output)
+	}
+}
