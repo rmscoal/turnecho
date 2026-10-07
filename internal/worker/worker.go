@@ -17,6 +17,7 @@ import (
 	"github.com/rmscoal/turnecho/internal/paths"
 	"github.com/rmscoal/turnecho/internal/player"
 	"github.com/rmscoal/turnecho/internal/queue"
+	"github.com/rmscoal/turnecho/internal/speak"
 	"github.com/rmscoal/turnecho/internal/tts"
 )
 
@@ -108,6 +109,7 @@ func SpawnBackground() error {
 type Dependencies struct {
 	Queue        *queue.DB
 	Backend      tts.Backend
+	OpenBackend  func(model string) (tts.Engine, error)
 	Play         func(wavPath string) error
 	PollInterval time.Duration
 	IdleTimeout  time.Duration
@@ -168,6 +170,37 @@ func Process(deps Dependencies) error {
 		return nil
 	}
 
+	// Keep one model warm across jobs, but never load it for an empty queue.
+	var engine tts.Engine
+	var currentModel string
+	defer func() {
+		if engine != nil {
+			engine.Close()
+		}
+	}()
+	selectBackend := func(model string) (tts.Backend, error) {
+		if deps.Backend != nil {
+			return deps.Backend, nil
+		}
+		if engine != nil && currentModel == model {
+			return engine, nil
+		}
+		open := deps.OpenBackend
+		if open == nil {
+			open = tts.Open
+		}
+		replacement, err := open(model)
+		if err != nil {
+			return nil, err
+		}
+		if engine != nil {
+			engine.Close()
+		}
+		engine, currentModel = replacement, model
+		logger.Debug("model loaded", "model", model)
+		return engine, nil
+	}
+
 	lastActivity := time.Now()
 	for {
 		job, err := deps.Queue.Claim()
@@ -175,6 +208,10 @@ func Process(deps Dependencies) error {
 			return err
 		}
 		if job == nil {
+			// Nothing to keep warm after a missing-runtime/load failure.
+			if engine == nil && deps.Backend == nil {
+				return nil
+			}
 			if time.Since(lastActivity) >= deps.idleTimeout() {
 				logger.Info("idle timeout reached, exiting")
 				return nil
@@ -182,13 +219,14 @@ func Process(deps Dependencies) error {
 			time.Sleep(deps.pollInterval())
 			continue
 		}
+		speakJob(deps, job, selectBackend)
+		// Inactivity begins after synthesis and playback finish, not at claim.
 		lastActivity = time.Now()
-		speakJob(deps, job)
 	}
 }
 
 // speakJob synthesizes and plays one job, always persisting the outcome.
-func speakJob(deps Dependencies, job *queue.Job) {
+func speakJob(deps Dependencies, job *queue.Job, selectBackend func(string) (tts.Backend, error)) {
 	// Never log the message text; it may be sensitive.
 	logger := deps.logger().With("job_id", job.ID, "host", job.Host, "turn_id", job.TurnID)
 	logger.Debug("job claimed")
@@ -202,26 +240,39 @@ func speakJob(deps Dependencies, job *queue.Job) {
 		deps.Queue.Finish(job)
 	}
 
-	// Reload config every job: Step 6 selects the TTS model from it, and a
-	// corrupt file must fail the job instead of speaking with stale state.
-	if _, err := config.Load(); err != nil {
-		failure(err)
-		return
-	}
-	samples, err := deps.Backend.Synthesize(job.Message, job.Voice, job.Speed)
+	// A corrupt config must fail the job rather than speak with stale state.
+	cfg, err := config.Load()
 	if err != nil {
 		failure(err)
 		return
 	}
-	wav, err := writeTempWAV(samples)
+	backend, err := selectBackend(cfg.Model)
 	if err != nil {
 		failure(err)
 		return
 	}
-	defer os.Remove(wav)
-	if err := deps.play()(wav); err != nil {
-		failure(err)
+	chunks := speak.Chunks(job.Message)
+	if len(chunks) == 0 {
+		failure(errors.New("speech text must be nonempty"))
 		return
+	}
+	for _, chunk := range chunks {
+		samples, err := backend.Synthesize(chunk, job.Voice, job.Speed)
+		if err != nil {
+			failure(err)
+			return
+		}
+		wav, err := writeTempWAV(samples)
+		if err != nil {
+			failure(err)
+			return
+		}
+		err = deps.play()(wav)
+		os.Remove(wav)
+		if err != nil {
+			failure(err)
+			return
+		}
 	}
 	logger.Info("job finished", "status", queue.Success)
 	now := time.Now().Unix()

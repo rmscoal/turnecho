@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,78 @@ func stubPlay(t *testing.T) *[]string {
 	play = func(path string) error { played = append(played, path); return nil }
 	t.Cleanup(func() { play = previous })
 	return &played
+}
+
+func stubTTS(t *testing.T) {
+	t.Helper()
+	previous := openBackend
+	openBackend = func(string) (tts.Engine, error) { return tts.SilentBackend{}, nil }
+	t.Cleanup(func() { openBackend = previous })
+}
+
+type speechEngine struct {
+	texts  []string
+	closes int
+	fail   error
+}
+
+func (e *speechEngine) Synthesize(text, _ string, _ float64) ([]int16, error) {
+	e.texts = append(e.texts, text)
+	return []int16{1, -1}, e.fail
+}
+
+func (e *speechEngine) Close() { e.closes++ }
+
+func useEngine(t *testing.T, engine tts.Engine, err error) {
+	t.Helper()
+	previous := openBackend
+	openBackend = func(string) (tts.Engine, error) { return engine, err }
+	t.Cleanup(func() { openBackend = previous })
+}
+
+func TestSpeechChunksCloseAndCleanUp(t *testing.T) {
+	isolateHome(t)
+	engine := &speechEngine{}
+	useEngine(t, engine, nil)
+	played := stubPlay(t)
+	code, _, stderr := run(t, "", "say", "First sentence. Second sentence.")
+	if code != ExitOK || stderr != "" {
+		t.Fatalf("code=%d error=%s", code, stderr)
+	}
+	if strings.Join(engine.texts, "|") != "First sentence.|Second sentence." || engine.closes != 1 || len(*played) != 2 {
+		t.Fatalf("texts=%v closes=%d played=%d", engine.texts, engine.closes, len(*played))
+	}
+	for _, path := range *played {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("temporary WAV retained: %s", path)
+		}
+	}
+}
+
+func TestSpeechFailureClosesModel(t *testing.T) {
+	isolateHome(t)
+	engine := &speechEngine{fail: errors.New("inference failed")}
+	useEngine(t, engine, nil)
+	played := stubPlay(t)
+	code, _, stderr := run(t, "", "test")
+	if code != ExitFailed || !strings.Contains(stderr, "inference failed") || engine.closes != 1 || len(*played) != 0 {
+		t.Fatalf("code=%d error=%s closes=%d played=%d", code, stderr, engine.closes, len(*played))
+	}
+}
+
+func TestSpeechCommandsRejectMissingRuntime(t *testing.T) {
+	home := isolateHome(t)
+	installFakePlayer(t)
+	useEngine(t, nil, errors.New("Kokoro runtime missing"))
+	for _, args := range [][]string{{"doctor", "--json"}, {"test"}, {"say", "Hello", "--output", filepath.Join(home, "out.wav")}} {
+		code, stdout, stderr := run(t, "", args...)
+		if code != ExitFailed || stdout != "" || !strings.Contains(stderr, "Kokoro runtime missing") {
+			t.Fatalf("args=%v code=%d out=%s error=%s", args, code, stdout, stderr)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "out.wav")); !os.IsNotExist(err) {
+		t.Fatal("missing runtime wrote WAV")
+	}
 }
 
 func TestConfigShowDefaults(t *testing.T) {
@@ -226,6 +299,7 @@ func installFakePlayer(t *testing.T) string {
 }
 
 func TestDoctor(t *testing.T) {
+	stubTTS(t)
 	home := isolateHome(t)
 	bin := installFakePlayer(t)
 	code, stdout, stderr := run(t, "", "doctor", "--json")
@@ -276,6 +350,7 @@ func TestDoctorWithoutPlayer(t *testing.T) {
 }
 
 func TestAudioCommands(t *testing.T) {
+	stubTTS(t)
 	isolateHome(t)
 	played := stubPlay(t)
 	code, stdout, _ := run(t, "", "test")
@@ -299,6 +374,7 @@ func TestAudioCommands(t *testing.T) {
 }
 
 func TestSayToFile(t *testing.T) {
+	stubTTS(t)
 	home := isolateHome(t)
 	output := filepath.Join(home, "out.wav")
 	code, stdout, stderr := run(t, "", "say", "hello", "--output", output)

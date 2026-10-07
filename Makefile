@@ -1,4 +1,4 @@
-.PHONY: help build test test-race cover vet fmt fmt-check check smoke clean
+.PHONY: help build build-audio test test-race cover vet fmt fmt-check check check-audio smoke clean
 
 SMOKE_DIR := .tmp/smoke
 SMOKE_HOME := $(SMOKE_DIR)/home
@@ -11,6 +11,13 @@ help: ## Show available targets.
 build: ## Compile every package.
 	@echo "== build =="
 	@go build ./...
+
+build-audio: ## Build a native Kokoro development binary (requires a C compiler).
+	@CGO_ENABLED=1 go build -tags sherpa -o turnecho ./cmd/turnecho
+
+check-audio: ## Vet and test the native build with mocked speech.
+	@CGO_ENABLED=1 go vet -tags sherpa ./...
+	@CGO_ENABLED=1 go test -tags sherpa ./...
 
 test: ## Run unit tests.
 	@echo "== test =="
@@ -55,21 +62,17 @@ smoke: ## Scripted end-to-end check with a throwaway HOME under .tmp/.
 	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) voices --json | grep -q "speaker-0"
 	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) models --json | grep -q "kokoro-en-v0_19"
 	@echo "OK voices and models"
-	@echo "== smoke: say writes a valid wav =="
-	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) say hello --output $(SMOKE_DIR)/out.wav
-	@test "$$(wc -c < $(SMOKE_DIR)/out.wav | tr -d ' ')" = "48044"
-	@echo "OK wav bytes (44 header + 24000 samples)"
+	@echo "== smoke: speech without native support fails clearly =="
+	@code=0; HOME=$(SMOKE_HOME) $(SMOKE_BIN) say hello --output $(SMOKE_DIR)/out.wav >$(SMOKE_DIR)/speech.log 2>&1 || code=$$?; test $$code -eq 1
+	@grep -q "native speech is unavailable" $(SMOKE_DIR)/speech.log
+	@test ! -e $(SMOKE_DIR)/out.wav
+	@echo "OK missing native runtime exits 1 without a wav"
 	@echo "== smoke: hook stop queues one job =="
 	@test "$$(printf '%s' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":"Done.\n\n<!-- turnecho-summary:v1\nFixed the bug.\n-->\n"}' | HOME=$(SMOKE_HOME) $(SMOKE_BIN) hook stop)" = "{}"
 	@echo "OK valid marker prints {}"
 	@test "$$(printf '%s' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","last_assistant_message":"Plain reply."}' | HOME=$(SMOKE_HOME) $(SMOKE_BIN) hook stop)" = "{}"
 	@echo "OK missing marker prints {}"
-	@echo "== smoke: doctor =="
-	@if command -v afplay >/dev/null 2>&1 || command -v aplay >/dev/null 2>&1; then HOME=$(SMOKE_HOME) $(SMOKE_BIN) doctor; else echo "SKIP doctor: no audio player in PATH"; fi
-	@echo "== smoke: worker speaks the queued job =="
-	@echo "(one second of silence is expected: Step 5 ships a stub backend)"
-	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) worker
-	@echo "OK worker exit 0"
+	@echo "== smoke: native WAV and worker playback are covered by the opt-in checks in docs/speech-runtime.md =="
 	@echo "== smoke passed =="
 
 clean: ## Remove local scratch dirs, binaries, and the test cache.

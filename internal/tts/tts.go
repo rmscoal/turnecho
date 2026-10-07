@@ -1,7 +1,7 @@
 // Package tts synthesizes speech audio.
 //
-// Step 5 ships only a silent stub backend so the worker, player, and CLI
-// paths run end to end without a model. Step 6 replaces it with sherpa.
+// Native speech is available in builds tagged sherpa. Unit tests use a
+// silent backend without loading native libraries or model files.
 package tts
 
 import (
@@ -17,6 +17,12 @@ type Backend interface {
 	Synthesize(text, voice string, speed float64) ([]int16, error)
 }
 
+// Engine owns a loaded model. Close releases its native memory.
+type Engine interface {
+	Backend
+	Close()
+}
+
 // SilentBackend returns one second of silence. It keeps queue ownership,
 // playback, and CLI tests headless-safe.
 type SilentBackend struct{}
@@ -25,6 +31,9 @@ type SilentBackend struct{}
 func (SilentBackend) Synthesize(_, _ string, _ float64) ([]int16, error) {
 	return make([]int16, SampleRate), nil
 }
+
+// Close is a no-op for the test backend.
+func (SilentBackend) Close() {}
 
 // WriteWAV stores mono 16-bit samples as a WAV file.
 func WriteWAV(path string, samples []int16) (err error) {

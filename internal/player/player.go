@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -47,6 +48,9 @@ func Play(wavPath string) error {
 func PlayWith(player, wavPath string) error {
 	pidPath, err := paths.PlayerPid()
 	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(pidPath), 0o700); err != nil {
 		return err
 	}
 	command := exec.Command(player, wavPath)

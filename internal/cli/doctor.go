@@ -48,10 +48,21 @@ func newDoctorCommand() *cobra.Command {
 				return commandError(err)
 			}
 			db.Close()
-			// Step 6 extends this with the TTS model check.
 			playerPath, err := player.Probe()
 			if err != nil {
 				return commandError(err)
+			}
+			engine, err := openBackend(cfg.Model)
+			if err != nil {
+				return commandError(err)
+			}
+			defer engine.Close()
+			samples, err := engine.Synthesize(TestPhrase, cfg.Voice, cfg.Speed)
+			if err != nil {
+				return commandError(err)
+			}
+			if len(samples) == 0 {
+				return commandError(fmt.Errorf("TTS runtime produced no audio"))
 			}
 			if asJSON {
 				return printJSON(cmd.OutOrStdout(), doctorReport{

@@ -23,6 +23,11 @@
   <a href="#installation"><img src="https://img.shields.io/badge/Codex-plugin-black?style=flat-square" alt="Codex plugin"></a>
 </p>
 
+> This branch is being rewritten in Go. For the current Kokoro build and
+> runtime instructions, see [Native speech development](docs/speech-runtime.md).
+> The installation guide below describes the archived Python v1 implementation
+> and will be replaced before the v2 release.
+
 ## Table of contents
 
 - [Introduction](#introduction)

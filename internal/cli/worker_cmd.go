@@ -26,9 +26,9 @@ func newWorkerCommand() *cobra.Command {
 			}
 			defer db.Close()
 			if err := worker.Process(worker.Dependencies{
-				Queue:   db,
-				Backend: backend,
-				Play:    play,
+				Queue:       db,
+				OpenBackend: openBackend,
+				Play:        play,
 			}); err != nil {
 				if errors.Is(err, worker.ErrAlreadyRunning) {
 					return nil

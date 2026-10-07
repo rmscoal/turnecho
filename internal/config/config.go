@@ -33,8 +33,8 @@ const DefaultModel = "kokoro"
 
 // Voices lists the selectable Kokoro speakers.
 //
-// Provisional sid table: names and the default are picked by listening in
-// Step 6 (see Open Question 1 in the rewrite plan).
+// These stable identifiers map directly to the pinned model's speaker IDs.
+// The default remains speaker-0 until a listening comparison chooses another.
 var Voices = []string{
 	"speaker-0",
 	"speaker-1",

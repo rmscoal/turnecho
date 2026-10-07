@@ -9,14 +9,16 @@ import (
 
 	"github.com/rmscoal/turnecho/internal/config"
 	"github.com/rmscoal/turnecho/internal/player"
+	"github.com/rmscoal/turnecho/internal/speak"
 	"github.com/rmscoal/turnecho/internal/tts"
 )
 
 // TestPhrase is the spoken audio check.
 const TestPhrase = "TurnEcho is configured and ready."
 
-// backend synthesizes speech. Step 6 swaps this stub for sherpa.
-var backend tts.Backend = tts.SilentBackend{}
+// openBackend loads models only for explicit speech and runtime checks.
+// Tests replace it without downloading models or playing sound.
+var openBackend = tts.Open
 
 // play speaks one file through the OS player. Tests replace it.
 var play = player.Play
@@ -31,7 +33,7 @@ func newTestCommand() *cobra.Command {
 			if err != nil {
 				return mapConfigError(err)
 			}
-			if err := speakText(TestPhrase, cfg.Voice, cfg.Speed); err != nil {
+			if err := speakText(TestPhrase, cfg); err != nil {
 				return commandError(err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "TurnEcho audio test completed.")
@@ -56,23 +58,30 @@ func newSayCommand() *cobra.Command {
 			if err != nil {
 				return mapConfigError(err)
 			}
-			samples, err := backend.Synthesize(args[0], cfg.Voice, cfg.Speed)
-			if err != nil {
-				return commandError(err)
-			}
 			if output != "" {
+				engine, err := openBackend(cfg.Model)
+				if err != nil {
+					return commandError(err)
+				}
+				defer engine.Close()
+				var samples []int16
+				for _, chunk := range speak.Chunks(args[0]) {
+					part, err := engine.Synthesize(chunk, cfg.Voice, cfg.Speed)
+					if err != nil {
+						return commandError(err)
+					}
+					samples = append(samples, part...)
+				}
+				if len(samples) == 0 {
+					return commandError(fmt.Errorf("speech text produced no audio"))
+				}
 				if err := tts.WriteWAV(output, samples); err != nil {
 					return commandError(err)
 				}
 				fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", output)
 				return nil
 			}
-			wav, err := writeSpokenWAV(samples)
-			if err != nil {
-				return commandError(err)
-			}
-			defer os.Remove(wav)
-			if err := play(wav); err != nil {
+			if err := speakText(args[0], cfg); err != nil {
 				return commandError(err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "Spoke %d characters.\n", utf8.RuneCountInString(args[0]))
@@ -104,17 +113,32 @@ func newStopCommand() *cobra.Command {
 }
 
 // speakText synthesizes text and plays it through the OS player.
-func speakText(text, voice string, speed float64) error {
-	samples, err := backend.Synthesize(text, voice, speed)
+func speakText(text string, cfg config.Config) error {
+	engine, err := openBackend(cfg.Model)
 	if err != nil {
 		return err
 	}
-	wav, err := writeSpokenWAV(samples)
-	if err != nil {
-		return err
+	defer engine.Close()
+	chunks := speak.Chunks(text)
+	if len(chunks) == 0 {
+		return fmt.Errorf("speech text must be nonempty")
 	}
-	defer os.Remove(wav)
-	return play(wav)
+	for _, chunk := range chunks {
+		samples, err := engine.Synthesize(chunk, cfg.Voice, cfg.Speed)
+		if err != nil {
+			return err
+		}
+		wav, err := writeSpokenWAV(samples)
+		if err != nil {
+			return err
+		}
+		err = play(wav)
+		os.Remove(wav)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeSpokenWAV(samples []int16) (string, error) {
