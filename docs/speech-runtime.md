@@ -43,6 +43,16 @@ kokoro-en-v0_19/
 
 By default TurnEcho looks in
 `~/.local/share/turnecho/runtimes/kokoro-en-v0_19/`.
+For development, fetch the model into project scratch (gitignored) with:
+
+```sh
+make download-model
+```
+
+This extracts `kokoro-en-v0_19` into `.tmp/models/` and prints the export
+below. `FORCE=1` re-downloads, `MODEL_URL` and `MODEL_DIR` override the
+source and destination.
+
 For development, point `TURNECHO_MODEL_DIR` at the extracted directory:
 
 ```sh

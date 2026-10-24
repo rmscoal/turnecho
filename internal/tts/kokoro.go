@@ -22,7 +22,7 @@ func Open(model string) (Engine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := validateModelDir(dir); err != nil {
+	if err := ValidateModelDir(dir); err != nil {
 		return nil, err
 	}
 	cfg := sherpa.OfflineTtsConfig{

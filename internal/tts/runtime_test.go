@@ -27,7 +27,7 @@ func TestModelDir(t *testing.T) {
 
 func TestValidateModelDir(t *testing.T) {
 	dir := t.TempDir()
-	if err := validateModelDir(dir); err == nil {
+	if err := ValidateModelDir(dir); err == nil {
 		t.Fatal("missing model accepted")
 	}
 	for _, name := range []string{"model.onnx", "voices.bin", "tokens.txt"} {
@@ -38,13 +38,13 @@ func TestValidateModelDir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "espeak-ng-data"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateModelDir(dir); err != nil {
+	if err := ValidateModelDir(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Truncate(filepath.Join(dir, "model.onnx"), 0); err != nil {
 		t.Fatal(err)
 	}
-	if err := validateModelDir(dir); err == nil {
+	if err := ValidateModelDir(dir); err == nil {
 		t.Fatal("empty model accepted")
 	}
 }

@@ -14,6 +14,21 @@ import (
 // ModelDirEnv overrides the model directory for development and runtime checks.
 const ModelDirEnv = "TURNECHO_MODEL_DIR"
 
+// HomeModelDir resolves the release model directory under the home runtime
+// dir. The installer targets this path so releases never depend on the
+// development override or the bundled executable layout.
+func HomeModelDir(model string) (string, error) {
+	id, ok := config.Models[model]
+	if !ok {
+		return "", fmt.Errorf("unsupported TTS model %q", model)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".local", "share", "turnecho", "runtimes", id), nil
+}
+
 // ModelDir resolves the pinned, local model directory. It never downloads files.
 func ModelDir(model string) (string, error) {
 	id, ok := config.Models[model]
@@ -35,7 +50,7 @@ func ModelDir(model string) (string, error) {
 	return filepath.Join(home, ".local", "share", "turnecho", "runtimes", id), nil
 }
 
-func validateModelDir(dir string) error {
+func ValidateModelDir(dir string) error {
 	for _, name := range []string{"model.onnx", "voices.bin", "tokens.txt", "espeak-ng-data"} {
 		path := filepath.Join(dir, name)
 		info, err := os.Stat(path)

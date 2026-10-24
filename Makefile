@@ -72,6 +72,15 @@ smoke: ## Scripted end-to-end check with a throwaway HOME under .tmp/.
 	@echo "OK valid marker prints {}"
 	@test "$$(printf '%s' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","last_assistant_message":"Plain reply."}' | HOME=$(SMOKE_HOME) $(SMOKE_BIN) hook stop)" = "{}"
 	@echo "OK missing marker prints {}"
+	@echo "== smoke: install dry-run plans without changes =="
+	@mkdir -p $(SMOKE_DIR)/stubs
+	@printf '#!/bin/sh\nexit 0\n' > $(SMOKE_DIR)/stubs/codex && chmod +x $(SMOKE_DIR)/stubs/codex
+	@printf '#!/bin/sh\nexit 0\n' > $(SMOKE_DIR)/stubs/claude && chmod +x $(SMOKE_DIR)/stubs/claude
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run | grep -q "Hosts: claude, codex"
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run | grep -q "Plugin: turnecho@turnecho via rmscoal/turnecho"
+	@code=0; PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run --host siri >/dev/null 2>&1 || code=$$?; test $$code -eq 2
+	@test ! -e $(SMOKE_HOME)/.local
+	@echo "OK dry-run plans, rejects bad host, changes nothing"
 	@echo "== smoke: native WAV and worker playback are covered by the opt-in checks in docs/speech-runtime.md =="
 	@echo "== smoke passed =="
 
@@ -82,6 +91,9 @@ clean: ## Remove local scratch dirs, binaries, and the test cache.
 
 package-audio: ## Build a portable native archive, including MODEL_DIR.
 	@./scripts/package-audio.sh "$(MODEL_DIR)"
+
+download-model: ## Fetch the Kokoro model into .tmp/models for development.
+	@./scripts/download-model.sh
 
 test-package-audio: ## Relocate and verify a full native archive without playback.
 	@./scripts/test-package-audio.sh "$(MODEL_DIR)"
