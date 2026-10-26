@@ -13,6 +13,29 @@ const LinkBinDir = ".local/bin"
 // LinkName is the managed symlink name.
 const LinkName = "turnecho"
 
+// OwnedLink reports whether path is a managed link: its resolved target is
+// the running executable, or it points inside a manifest-valid release unit.
+// Anything else, including dangling links, is preserved, never removed.
+func OwnedLink(path, exe string) (bool, error) {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, nil
+	}
+	current, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return false, err
+	}
+	if target == current {
+		return true, nil
+	}
+	unit := filepath.Dir(filepath.Dir(target))
+	manifest, err := ReadReleaseManifest(unit)
+	if err != nil {
+		return false, nil
+	}
+	return manifest.Name == ReleaseManifestKind && filepath.Base(target) == LinkName, nil
+}
+
 // LinkPath returns the managed symlink path under home.
 func LinkPath() (string, error) {
 	home, err := os.UserHomeDir()

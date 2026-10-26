@@ -38,6 +38,9 @@ func NewRoot() *cobra.Command {
 		newSayCommand(),
 		newStopCommand(),
 		newInstallCommand(),
+		newUninstallCommand(),
+		newUpgradeCommand(),
+		newSelfcheckCommand(),
 		newHookCommand(),
 		newWorkerCommand(),
 	)

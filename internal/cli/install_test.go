@@ -24,8 +24,9 @@ func writeFakeHostCLI(t *testing.T, dir, name string) {
 
 func stubInstallDeps(t *testing.T, url string) {
 	t.Helper()
-	previousURL, previousOpen, previousProbe, previousExe, previousRunner := installModelURL, installOpen, installProbe, installExe, installRunner
+	previousURL, previousSHA, previousOpen, previousProbe, previousExe, previousRunner := installModelURL, installModelSHA, installOpen, installProbe, installExe, installRunner
 	installModelURL = url
+	installModelSHA = ""
 	installOpen = func(string) (tts.Engine, error) { return tts.SilentBackend{}, nil }
 	installProbe = func() (string, error) { return "/fake/afplay", nil }
 	exe := filepath.Join(t.TempDir(), "turnecho")
@@ -35,7 +36,7 @@ func stubInstallDeps(t *testing.T, url string) {
 	installExe = func() (string, error) { return exe, nil }
 	installRunner = fakeHostRunner()
 	t.Cleanup(func() {
-		installModelURL, installOpen, installProbe, installExe, installRunner = previousURL, previousOpen, previousProbe, previousExe, previousRunner
+		installModelURL, installModelSHA, installOpen, installProbe, installExe, installRunner = previousURL, previousSHA, previousOpen, previousProbe, previousExe, previousRunner
 	})
 }
 

@@ -3,16 +3,19 @@ package cli
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/rmscoal/turnecho/internal/config"
 	"github.com/rmscoal/turnecho/internal/install"
+	"github.com/rmscoal/turnecho/internal/worker"
 )
 
 // Install dependencies replaced in tests to avoid downloads and audio.
 var (
 	installModelURL = install.ModelURL
+	installModelSHA = install.PinnedModelSHA256
 	installOpen     = openOwnedBackend
 	installProbe    = install.DefaultProbe
 	installExe      = os.Executable
@@ -74,36 +77,66 @@ func parseHosts(values []string) ([]install.Host, error) {
 }
 
 func runInstall(cmd *cobra.Command, plan install.Plan) error {
-	// Model files are a cache, not owned state: a failed install keeps
-	// them so the next run resumes without another large download.
 	var undo []install.Rollback
 	rollback := func() {
 		for _, err := range install.RollbackAll(undo) {
 			fmt.Fprintf(cmd.ErrOrStderr(), "turnecho: rollback failed: %v\n", err)
 		}
 	}
-	if err := install.EnsureModel(installModelURL, plan.ModelDir, plan.Update); err != nil {
-		return commandError(err)
+	// Prepare the model without touching live state, then activate it and
+	// link it under one worker lock so concurrent commands and speech
+	// never observe a half-swapped installation.
+	var commitModel func() error
+	var staged string
+	if !install.ModelReady(plan.ModelDir, installModelSHA) || plan.Update {
+		var discardStaged func()
+		var err error
+		staged, discardStaged, err = install.StageModel(installModelURL, plan.Model, installModelSHA, filepath.Dir(plan.ModelDir))
+		if err != nil {
+			return commandError(err)
+		}
+		// Runs even after a successful activation: the staged dir has moved
+		// by then, and this removes the leftover staging area instead.
+		defer discardStaged()
+	}
+	release, err := worker.HoldLock()
+	if err != nil {
+		return commandError(speechBusy(err))
+	}
+	if staged != "" {
+		var undoModel install.Rollback
+		commitModel, undoModel, err = install.ActivateModel(staged, plan.ModelDir)
+		if err != nil {
+			release()
+			return commandError(err)
+		}
+		undo = append(undo, undoModel)
 	}
 	fmt.Fprintln(cmd.OutOrStdout(), "Model ready.")
-	cfg, err := config.Load()
-	if err != nil {
-		return mapConfigError(err)
-	}
-	if err := install.Preflight(cfg.Model, cfg.Voice, cfg.Speed, installOpen, installProbe); err != nil {
-		return commandError(err)
-	}
-	fmt.Fprintln(cmd.OutOrStdout(), "Runtime check passed.")
 	exe, err := installExe()
 	if err != nil {
+		release()
+		rollback()
 		return commandError(err)
 	}
 	undoLink, err := install.EnsureLink(plan.LinkPath, exe)
+	release()
 	if err != nil {
+		rollback()
 		return commandError(err)
 	}
 	undo = append(undo, undoLink)
 	fmt.Fprintf(cmd.OutOrStdout(), "Linked %s.\n", plan.LinkPath)
+	cfg, err := config.Load()
+	if err != nil {
+		rollback()
+		return mapConfigError(err)
+	}
+	if err := install.Preflight(cfg.Model, cfg.Voice, cfg.Speed, installOpen, installProbe); err != nil {
+		rollback()
+		return commandError(err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), "Runtime check passed.")
 	for _, host := range plan.Hosts {
 		undoHost, err := install.EnsureHost(host, installRunner)
 		if err != nil {
@@ -113,6 +146,17 @@ func runInstall(cmd *cobra.Command, plan install.Plan) error {
 		undo = append(undo, undoHost)
 		fmt.Fprintf(cmd.OutOrStdout(), "Registered %s plugin.\n", host)
 	}
+	if commitModel != nil {
+		if err := commitModel(); err != nil {
+			rollback()
+			return commandError(err)
+		}
+	}
 	fmt.Fprintln(cmd.OutOrStdout(), "TurnEcho installed.")
 	return nil
+}
+
+// speechBusy turns a contested worker lock into a retry message.
+func speechBusy(err error) error {
+	return fmt.Errorf("speech in progress, retry shortly: %v", err)
 }

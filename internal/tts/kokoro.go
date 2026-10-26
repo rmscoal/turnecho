@@ -25,6 +25,19 @@ func Open(model string) (Engine, error) {
 	if err := ValidateModelDir(dir); err != nil {
 		return nil, err
 	}
+	return openDir(dir)
+}
+
+// OpenDir loads the model in dir, bypassing overrides. Upgrade uses it to
+// prove a staged release before that release becomes live.
+func OpenDir(dir string) (Engine, error) {
+	if err := ValidateModelDir(dir); err != nil {
+		return nil, err
+	}
+	return openDir(dir)
+}
+
+func openDir(dir string) (Engine, error) {
 	cfg := sherpa.OfflineTtsConfig{
 		Model: sherpa.OfflineTtsModelConfig{
 			Kokoro: sherpa.OfflineTtsKokoroModelConfig{

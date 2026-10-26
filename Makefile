@@ -81,6 +81,10 @@ smoke: ## Scripted end-to-end check with a throwaway HOME under .tmp/.
 	@code=0; PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run --host siri >/dev/null 2>&1 || code=$$?; test $$code -eq 2
 	@test ! -e $(SMOKE_HOME)/.local
 	@echo "OK dry-run plans, rejects bad host, changes nothing"
+	@echo "== smoke: uninstall dry-run plans without changes =="
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) uninstall --dry-run | grep -q "Host: codex"
+	@test ! -e $(SMOKE_HOME)/.local
+	@echo "OK uninstall dry-run plans, changes nothing"
 	@echo "== smoke: native WAV and worker playback are covered by the opt-in checks in docs/speech-runtime.md =="
 	@echo "== smoke passed =="
 

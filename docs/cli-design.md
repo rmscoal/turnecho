@@ -24,7 +24,7 @@ turnecho say <text> [--output file.wav]
 turnecho stop
 turnecho install [--host codex|claude|all] [--update] [--dry-run]
 turnecho upgrade [--check] [--dry-run]
-turnecho uninstall
+turnecho uninstall [--dry-run]
 turnecho hook prompt|stop       (hidden: host entry points)
 turnecho worker                 (hidden: detached worker)
 ```

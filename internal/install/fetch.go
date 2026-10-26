@@ -3,8 +3,10 @@ package install
 import (
 	"archive/tar"
 	"compress/bzip2"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,53 +19,158 @@ import (
 )
 
 // ModelURL is the official Kokoro release archive fetched by install.
-// A pinned checksum will replace the recorded hash once Step 9 cuts a
-// release; until then the hash is recorded for reference only.
 const ModelURL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-en-v0_19.tar.bz2"
+
+// PinnedModelSHA256 is the archive checksum CI verifies. Release paths
+// always verify against it; an empty expected hash skips verification and
+// is reserved for tests.
+const PinnedModelSHA256 = "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7"
+
+// RuntimeMarkerName marks directories this installer owns.
+const RuntimeMarkerName = ".turnecho-runtime.json"
+
+// RuntimeMarkerKind identifies ownership markers written by install.
+const RuntimeMarkerKind = "turnecho-runtime"
+
+// RuntimeMarker records which model release a runtime dir holds.
+type RuntimeMarker struct {
+	Name   string `json:"name"`
+	Model  string `json:"model"`
+	SHA256 string `json:"sha256"`
+}
 
 // downloadTimeout bounds a stalled model download.
 const downloadTimeout = 10 * time.Minute
 
-// EnsureModel guarantees a validated model directory at dest,
-// downloading from url unless the directory already validates.
-// force re-downloads even when dest validates.
-func EnsureModel(url, dest string, force bool) error {
-	if err := guardDest(dest); err != nil {
-		return err
+// ModelReady reports whether dest holds a validated model matching
+// expectedSHA. An empty expectedSHA checks files only and is reserved
+// for tests.
+func ModelReady(dest, expectedSHA string) bool {
+	if err := tts.ValidateModelDir(dest); err != nil {
+		return false
 	}
-	if !force {
-		if err := tts.ValidateModelDir(dest); err == nil {
-			return nil
-		}
+	marker, err := ReadRuntimeMarker(dest)
+	if err != nil || marker.Name != RuntimeMarkerKind {
+		return false
 	}
-	work, err := os.MkdirTemp("", "turnecho-model-")
+	return expectedSHA == "" || marker.SHA256 == expectedSHA
+}
+
+// ReadRuntimeMarker parses the ownership marker in dir.
+func ReadRuntimeMarker(dir string) (RuntimeMarker, error) {
+	var marker RuntimeMarker
+	raw, err := os.ReadFile(filepath.Join(dir, RuntimeMarkerName))
 	if err != nil {
-		return err
+		return marker, err
 	}
-	defer os.RemoveAll(work)
+	if err := json.Unmarshal(raw, &marker); err != nil {
+		return marker, fmt.Errorf("parsing runtime marker: %w", err)
+	}
+	return marker, nil
+}
+
+// StageModel downloads url, verifies expectedSHA when non-empty, extracts
+// and validates into a fresh directory under workParent. It returns the
+// staged model dir plus a discard func that removes the whole staging area,
+// including the downloaded archive. The caller runs discard after
+// ActivateModel moves the staged dir into place; staged contents already
+// moved are unaffected. Staging never touches live state and takes no
+// locks; the caller commits with ActivateModel. workParent should be the
+// destination's parent so the later rename stays on one filesystem.
+func StageModel(url, modelID, expectedSHA, workParent string) (staged string, discard func(), err error) {
+	if err := os.MkdirAll(workParent, 0o755); err != nil {
+		return "", nil, err
+	}
+	work, err := os.MkdirTemp(workParent, ".turnecho-stage-*")
+	if err != nil {
+		return "", nil, err
+	}
+	discard = func() { os.RemoveAll(work) }
 	archive := filepath.Join(work, "kokoro.tar.bz2")
 	sum, err := download(url, archive)
 	if err != nil {
-		return err
+		discard()
+		return "", nil, err
+	}
+	if expectedSHA != "" && hex.EncodeToString(sum[:]) != expectedSHA {
+		discard()
+		return "", nil, fmt.Errorf("model checksum mismatch for %s", url)
 	}
 	top, err := extract(archive, work)
 	if err != nil {
-		return err
+		discard()
+		return "", nil, err
 	}
 	if err := tts.ValidateModelDir(top); err != nil {
+		discard()
+		return "", nil, err
+	}
+	if err := writeModelRecord(top, modelID, sum); err != nil {
+		discard()
+		return "", nil, err
+	}
+	return top, discard, nil
+}
+
+// ActivateModel swaps staged into dest. The caller must hold the worker
+// lock: activation mutates shared state. It returns commit, which drops
+// the preserved previous model after overall success, and rollback, which
+// restores the previous model or, for a fresh install, keeps the validated
+// fetch as a cache. Refuses when another transaction's backup exists.
+func ActivateModel(staged, dest string) (commit func() error, rollback Rollback, err error) {
+	if err := guardDest(dest); err != nil {
+		return nil, nil, err
+	}
+	previous := dest + ".previous"
+	if _, err := os.Lstat(previous); err == nil {
+		return nil, nil, fmt.Errorf("model backup %s exists from another transaction, refusing", previous)
+	}
+	nothing := func() error { return nil }
+	if _, err := os.Lstat(dest); os.IsNotExist(err) {
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := os.Rename(staged, dest); err != nil {
+			return nil, nil, err
+		}
+		return nothing, nothing, nil
+	}
+	if err := os.Rename(dest, previous); err != nil {
+		return nil, nil, err
+	}
+	if err := os.Rename(staged, dest); err != nil {
+		if rerr := os.Rename(previous, dest); rerr != nil {
+			return nil, nil, fmt.Errorf("%v; restoring previous model: %v", err, rerr)
+		}
+		return nil, nil, err
+	}
+	commit = func() error { return os.RemoveAll(previous) }
+	rollback = func() error {
+		if err := os.RemoveAll(dest); err != nil {
+			return err
+		}
+		return os.Rename(previous, dest)
+	}
+	return commit, rollback, nil
+}
+
+// writeModelRecord stores the archive hash and ownership marker beside a
+// staged model so the whole unit moves together on activation.
+func writeModelRecord(dir, modelID string, sum [32]byte) error {
+	hash := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(filepath.Join(dir, "SOURCE.sha256"),
+		[]byte(hash+"  kokoro.tar.bz2\n"), 0o600); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	marker, err := json.Marshal(RuntimeMarker{
+		Name:   RuntimeMarkerKind,
+		Model:  modelID,
+		SHA256: hash,
+	})
+	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(dest); err != nil {
-		return err
-	}
-	if err := os.Rename(top, dest); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(dest, "SOURCE.sha256"),
-		[]byte(hex.EncodeToString(sum[:])+"  kokoro.tar.bz2\n"), 0o600)
+	return os.WriteFile(filepath.Join(dir, RuntimeMarkerName), append(marker, '\n'), 0o600)
 }
 
 // guardDest refuses installation paths that would endanger the home tree.
@@ -77,6 +184,18 @@ func guardDest(dest string) error {
 		return fmt.Errorf("refusing to install model into unsafe directory: %s", dest)
 	}
 	return nil
+}
+
+// decompress selects bzip2 or gzip by archive suffix.
+func decompress(archive string, file io.Reader) (io.Reader, error) {
+	switch {
+	case strings.HasSuffix(archive, ".bz2"):
+		return bzip2.NewReader(file), nil
+	case strings.HasSuffix(archive, ".gz"):
+		return gzip.NewReader(file)
+	default:
+		return nil, fmt.Errorf("unsupported archive format: %s", archive)
+	}
 }
 
 // download fetches url to path, returning the archive SHA256.
@@ -115,7 +234,11 @@ func extract(archive, work string) (string, error) {
 		return "", err
 	}
 	defer file.Close()
-	reader := tar.NewReader(bzip2.NewReader(file))
+	decompressed, err := decompress(archive, file)
+	if err != nil {
+		return "", err
+	}
+	reader := tar.NewReader(decompressed)
 	var top string
 	for {
 		header, err := reader.Next()
