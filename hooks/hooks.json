@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/run_hook.sh\" prompt || printf '{}\\n'",
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/turnecho\" hook prompt || printf '{}\\n'",
             "timeout": 3
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/hooks/run_hook.sh\" stop || printf '{}\\n'",
+            "command": "\"${CLAUDE_PLUGIN_ROOT:-$PLUGIN_ROOT}/bin/turnecho\" hook stop || printf '{}\\n'",
             "statusMessage": "Talking back to you",
             "timeout": 10
           }

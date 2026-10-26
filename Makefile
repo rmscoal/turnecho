@@ -1,14 +1,103 @@
-.PHONY: lint format check e2e
+.PHONY: help package-audio test-package-audio build build-audio test test-race cover vet fmt fmt-check check check-audio smoke clean
 
-lint:
-	uv run ruff check .
+SMOKE_DIR := .tmp/smoke
+SMOKE_HOME := $(SMOKE_DIR)/home
+SMOKE_BIN := $(SMOKE_DIR)/turnecho
 
-format:
-	uv run ruff format .
+help: ## Show available targets.
+	@echo "TurnEcho targets:"
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
 
-check: lint
-	uv run ruff format --check .
+build: ## Compile every package.
+	@echo "== build =="
+	@go build ./...
 
-# E2E_QUIET=1 skips audio playback; by default all summaries play aloud.
-e2e:
-	uv run --no-dev python scripts/e2e_hook_check.py
+build-audio: ## Build a native Kokoro development binary (requires a C compiler).
+	@CGO_ENABLED=1 go build -tags sherpa -o turnecho ./cmd/turnecho
+
+check-audio: ## Vet and test the native build with mocked speech.
+	@CGO_ENABLED=1 go vet -tags sherpa ./...
+	@CGO_ENABLED=1 go test -tags sherpa ./...
+
+test: ## Run unit tests.
+	@echo "== test =="
+	@go test ./...
+
+test-race: ## Run unit tests with the race detector.
+	@echo "== test -race =="
+	@go test -race ./...
+
+cover: ## Run unit tests with coverage.
+	@echo "== test -cover =="
+	@go test -cover ./...
+
+vet: ## Vet every package.
+	@echo "== vet =="
+	@go vet ./...
+
+fmt: ## Format sources in place.
+	@echo "== gofmt -w =="
+	@gofmt -w .
+
+fmt-check: ## Fail when any source is unformatted.
+	@echo "== gofmt check =="
+	@test -z "$$(gofmt -l .)"
+
+check: vet fmt-check test ## Run the full gate: vet, format check, tests.
+
+smoke: ## Scripted end-to-end check with a throwaway HOME under .tmp/.
+	@echo "== smoke: building test binary =="
+	@rm -rf $(SMOKE_DIR) && mkdir -p $(SMOKE_HOME)
+	@go build -o $(SMOKE_BIN) ./cmd/turnecho
+	@echo "== smoke: config defaults =="
+	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) config show
+	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) config show | grep -q "voice: speaker-0"
+	@echo "OK defaults"
+	@echo "== smoke: config set rejects bad values =="
+	@code=0; HOME=$(SMOKE_HOME) $(SMOKE_BIN) config set speed fast >/dev/null 2>&1 || code=$$?; test $$code -eq 2
+	@echo "OK bad speed exits 2"
+	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) config set voice speaker-3 | grep -q "voice: speaker-3"
+	@echo "OK set voice"
+	@echo "== smoke: list commands =="
+	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) voices --json | grep -q "speaker-0"
+	@HOME=$(SMOKE_HOME) $(SMOKE_BIN) models --json | grep -q "kokoro-en-v0_19"
+	@echo "OK voices and models"
+	@echo "== smoke: speech without native support fails clearly =="
+	@code=0; HOME=$(SMOKE_HOME) $(SMOKE_BIN) say hello --output $(SMOKE_DIR)/out.wav >$(SMOKE_DIR)/speech.log 2>&1 || code=$$?; test $$code -eq 1
+	@grep -q "native speech is unavailable" $(SMOKE_DIR)/speech.log
+	@test ! -e $(SMOKE_DIR)/out.wav
+	@echo "OK missing native runtime exits 1 without a wav"
+	@echo "== smoke: hook stop queues one job =="
+	@test "$$(printf '%s' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t1","last_assistant_message":"Done.\n\n<!-- turnecho-summary:v1\nFixed the bug.\n-->\n"}' | HOME=$(SMOKE_HOME) $(SMOKE_BIN) hook stop)" = "{}"
+	@echo "OK valid marker prints {}"
+	@test "$$(printf '%s' '{"hook_event_name":"Stop","session_id":"s1","turn_id":"t2","last_assistant_message":"Plain reply."}' | HOME=$(SMOKE_HOME) $(SMOKE_BIN) hook stop)" = "{}"
+	@echo "OK missing marker prints {}"
+	@echo "== smoke: install dry-run plans without changes =="
+	@mkdir -p $(SMOKE_DIR)/stubs
+	@printf '#!/bin/sh\nexit 0\n' > $(SMOKE_DIR)/stubs/codex && chmod +x $(SMOKE_DIR)/stubs/codex
+	@printf '#!/bin/sh\nexit 0\n' > $(SMOKE_DIR)/stubs/claude && chmod +x $(SMOKE_DIR)/stubs/claude
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run | grep -q "Hosts: claude, codex"
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run | grep -q "Plugin: turnecho@turnecho via rmscoal/turnecho"
+	@code=0; PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) install --dry-run --host siri >/dev/null 2>&1 || code=$$?; test $$code -eq 2
+	@test ! -e $(SMOKE_HOME)/.local
+	@echo "OK dry-run plans, rejects bad host, changes nothing"
+	@echo "== smoke: uninstall dry-run plans without changes =="
+	@PATH="$(CURDIR)/$(SMOKE_DIR)/stubs:$$PATH" HOME=$(SMOKE_HOME) $(SMOKE_BIN) uninstall --dry-run | grep -q "Host: codex"
+	@test ! -e $(SMOKE_HOME)/.local
+	@echo "OK uninstall dry-run plans, changes nothing"
+	@echo "== smoke: native WAV and worker playback are covered by the opt-in checks in docs/speech-runtime.md =="
+	@echo "== smoke passed =="
+
+clean: ## Remove local scratch dirs, binaries, and the test cache.
+	@echo "== clean =="
+	@rm -rf .tmp turnecho
+	@go clean -testcache
+
+package-audio: ## Build a portable native archive, including MODEL_DIR.
+	@./scripts/package-audio.sh "$(MODEL_DIR)"
+
+download-model: ## Fetch the Kokoro model into .tmp/models for development.
+	@./scripts/download-model.sh
+
+test-package-audio: ## Relocate and verify a full native archive without playback.
+	@./scripts/test-package-audio.sh "$(MODEL_DIR)"

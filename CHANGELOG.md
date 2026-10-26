@@ -1,79 +1,15 @@
 # Changelog
 
-## 0.3.2 - 2026-09-18
+## 1.0.0 - 2026-09-18
 
-- Fix `turnecho-install` failing on Python 3.13 by requiring
-  `curated-tokenizers>=0.0.10`, the first release with `cp313` wheels, so the
-  installer no longer attempts a source build that crashes under Cython.
-
-## 0.3.1 - 2026-09-17
-
-- Detect the installed Codex and Claude Code CLIs and install TurnEcho into
-  each detected host automatically, for both GitHub and local-checkout
-  installs, with `--host` and `--skip-*` flags to narrow the selection.
-- Add Claude Code marketplace packaging and a directory-marketplace flow for
-  local-checkout installs and updates.
-- Skip Codex-only files on Claude-only machines while keeping `--skip-codex`
-  metadata preparation for a later manual `codex plugin add`.
-- Share one versioned runtime across hosts on multi-host GitHub installs and
-  roll every host back when any step fails.
-
-## 0.3.0 - 2026-09-12
-
-- Support Claude Code alongside Codex through per-host hook adapters over a
-  shared core, with dual plugin packaging.
-- Synthesize Claude Code turn ids from the transcript plus a message hash,
-  keeping repeated messages in long sessions distinct.
-- Fail safe to empty output for unknown hosts and unreadable transcripts.
-- Add an audible end-to-end hook check (`make e2e`) covering both hosts.
-
-## 0.2.4 - 2026-09-02
-
-- Start the detached background worker during `UserPromptSubmit` so worker
-  startup can happen while Codex is preparing the response.
-- Keep the `Stop` hook worker startup as a recovery path for jobs queued after
-  the prompt hook worker has exited.
-
-## 0.2.3 - 2026-08-25
-
-- Build managed virtual environments at their permanent versioned path so
-  generated command launchers never retain a deleted installation path.
-- Execute the final managed `turnecho` command before reporting installation
-  success, and restore the previous same-version runtime if validation fails.
-- Use the same permanent runtime for GitHub and local-checkout installations.
-  Hook launchers now execute that runtime's Python directly without invoking
-  `uv` on every Codex hook.
-
-## 0.2.2 - 2026-08-25
-
-- Store versioned, non-editable Python runtimes outside the Codex-managed
-  plugin cache so rematerializing a plugin does not delete its environment.
-- Run hooks through a guarded launcher that points `uv` at the stable runtime,
-  preventing fallback to the current workspace when a plugin root is missing.
-- Return valid empty JSON when the bound plugin source or runtime is missing.
-- Prepare same-version repairs atomically and restore the previous runtime and
-  managed command when an update fails.
-- Add an official GitHub uninstall path that removes marked runtimes and the
-  managed command without changing unrelated files.
-- Document new-task update boundaries, repair behavior, stable runtime storage,
-  troubleshooting, and external runtime cleanup.
-
-## 0.2.1 - 2026-08-25
-
-- Rebuild and verify the previous cached runtime when an update rollback
-  restores an earlier plugin release.
-- Restore the managed `turnecho` command as part of update rollback.
-- Repair dangling managed command links left by removed Codex cache versions.
-- Clarify the supported install, update, repair, and uninstall lifecycle.
-- Keep GitHub installer release metadata in shared constants.
-
-## 0.2.0 - 2026-08-24
-
-- Added the dependency-free `turnecho` CLI for inspecting and changing local
-  settings.
-- Added configurable KittenTTS models, with `mini` as the default and `micro`
-  and `nano` as alternatives.
-- Added model-aware runtime checks, audio tests, and worker model reloading.
-- Added the `turnecho-config` skill for guided CLI configuration through Codex.
-- Kept configuration schema version 1 because the model setting was added
-  before this release.
+- Initial release. TurnEcho speaks a short validated summary at the end of
+  every Codex and Claude Code turn while leaving the full response on screen.
+- Supports Codex and Claude Code on macOS and Linux through per-host hook
+  adapters over a shared core.
+- Queues validated summaries in local SQLite and plays them in order through
+  one detached KittenTTS worker.
+- Installs through a dependency-free `turnecho-install` plus a versioned
+  audio runtime built from the release lockfile; failures roll every host
+  back.
+- Configures model, voice, speech speed, and enabled state through the local
+  `turnecho` command.
